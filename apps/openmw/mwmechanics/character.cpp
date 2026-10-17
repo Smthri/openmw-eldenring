@@ -24,6 +24,7 @@
 #include <components/eldencombat/animations.hpp>
 #include <components/eldencombat/locomotion.hpp>
 #include <components/eldencombat/spellcasting.hpp>
+#include <components/eldencombat/throwing.hpp>
 #include <components/esm/records.hpp>
 #include <components/misc/mathutil.hpp>
 #include <components/misc/resourcehelpers.hpp>
@@ -2285,7 +2286,7 @@ namespace MWMechanics
     void CharacterController::updateEldenPose(float duration, const osg::Vec3f& movement)
     {
         const auto& cls = mPtr.getClass();
-        if (!cls.isNpc() || !Settings::game().mEldenRingCombat || isScriptedAnimPlaying())
+        if (!mAnimation->hasEldenAnimation() || !Settings::game().mEldenRingCombat || isScriptedAnimPlaying())
         {
             mEldenLocomotion.reset();
             mEldenGroundContact.reset();
@@ -2326,6 +2327,53 @@ namespace MWMechanics
         const bool visuallyGrounded = mEldenGroundContact.update(input.mGrounded, duration);
         if (action == EldenCombat::Action::Jump)
             mEldenGroundContact.reset();
+        const bool throwing = getWeaponType(mWeaponTypeId)->mWeaponClass == ESM::WeaponType::Thrown
+            && mAttackType == "shoot"
+            && (mUpperBodyState == UpperBodyState::AttackWindUp || mUpperBodyState == UpperBodyState::AttackRelease
+                || mUpperBodyState == UpperBodyState::AttackEnd);
+        if (mEldenCombatActive && throwing && mHitState == CharState_None
+            && (action == EldenCombat::Action::Idle || action == EldenCombat::Action::Jump))
+        {
+            const auto& animation = EldenCombat::DartThrowAnimation;
+            float speed = 0.f;
+            // A held throw remains in the animation map after its windup
+            // stops playing at max attack; keep showing the ready pose.
+            if (mAnimation->getInfo(mCurrentWeapon, nullptr, &speed))
+            {
+                const std::string prefix = mCurrentWeapon + ": shoot ";
+                const float minAttack = mAnimation->getTextKeyTime(prefix + "min attack");
+                const float maxAttack = mAnimation->getTextKeyTime(prefix + "max attack");
+                const float currentTime = mAnimation->getCurrentTime(mCurrentWeapon);
+                float time = currentTime + duration * speed;
+                // Holding the native attack stops at max attack. Predict the
+                // same clamp so a fully charged throw stays in its ready pose.
+                if (mUpperBodyState == UpperBodyState::AttackWindUp
+                    || (mUpperBodyState == UpperBodyState::AttackRelease && currentTime < minAttack))
+                    time = std::min(time, maxAttack);
+                const auto frame = EldenCombat::throwingAnimationFrame(time,
+                    mAnimation->getTextKeyTime(prefix + "start"),
+                    minAttack, maxAttack,
+                    mAnimation->getTextKeyTime(prefix + "release"),
+                    mAnimation->getTextKeyTime(prefix + "follow start"),
+                    mAnimation->getTextKeyTime(prefix + "follow stop"),
+                    mUpperBodyState == UpperBodyState::AttackEnd,
+                    mAnimation->getEldenAnimationLength(animation.mClip));
+                if (frame)
+                {
+                    mEldenPoseTime = 0.f;
+                    mEldenLocomotion.reset();
+                    mEldenIdleFacing.reset();
+                    const bool upperBodyOnly = input.mCrouching || !input.mGrounded
+                        || std::hypot(movement.x(), movement.y()) > 0.001f
+                        || (mPtr == getPlayer() && MWBase::Environment::get().getWorld()->isFirstPerson());
+                    // Native text keys still release exactly one projectile,
+                    // consume ammunition, and determine damage and aiming.
+                    mAnimation->playEldenAnimation(animation.mClip, *frame, false, duration,
+                        0.f, {}, {}, {}, upperBodyOnly);
+                    return;
+                }
+            }
+        }
         if (mEldenCombatActive && mUpperBodyState == UpperBodyState::Casting && mCurrentWeapon == "spellcast"
             && action == EldenCombat::Action::Idle && mHitState == CharState_None && input.mGrounded
             && !input.mCrouching && std::hypot(movement.x(), movement.y()) <= 0.001f
@@ -2357,7 +2405,7 @@ namespace MWMechanics
                 }
             }
         }
-        // Native moving/first-person spell, ranged, equip, swimming and scripted
+        // Native moving/first-person spell, other ranged, equip, swimming and scripted
         // poses still own their tracks. Melee text keys remain native underneath.
         if (!mEldenCombatActive || mUpperBodyState == UpperBodyState::Equipping
             || mUpperBodyState == UpperBodyState::Unequipping

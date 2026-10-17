@@ -34,7 +34,7 @@ ORIENTED_JOINTS = {"Head", "R_Weapon", "L_Weapon"}
 LOCOMOTION = (*range(20000, 20004), *range(20100, 20104), 20200, *range(22100, 22104))
 BASE_ANIMATIONS = (
     0, 100, *LOCOMOTION, 300000, *range(320000, 320004), *range(320100, 320104),
-    322100, 390000, 390001, 202040, 4000, 17002,
+    322100, 390000, 390001, 202040, 4000, 17002, 50170,
 )
 # Wind-up and uncharged release phases used by spellcasting.hpp. Keep these
 # mandatory even in a copied Windows checkout without the recreation sources.

@@ -1709,13 +1709,18 @@ namespace MWRender
             mObjectRoot->addCullCallback(mTransparencyUpdater);
 
         // Capture the model's bind transforms before any native keyframes run.
-        // Creature and osgAnimation rigs retain their own animation sources.
-        if (Settings::game().mEldenRingCombat && mPtr.getClass().isNpc() && !mRequiresBoneMap)
+        // Bipedal creatures can share the NPC rig (skeletons, dremora, saints,
+        // etc.). Require a complete humanoid body for them; the NPC adapter
+        // also supports the deliberately incomplete first-person skeleton.
+        const bool humanoid = mPtr.getClass().isNpc()
+            || (isCreature && mPtr.getClass().isBipedal(mPtr));
+        if (Settings::game().mEldenRingCombat && humanoid && !mRequiresBoneMap)
         {
             mEldenAnimationBank = getEldenAnimationBank(mResourceSystem->getVFS());
             if (mEldenAnimationBank)
             {
-                mEldenAnimation = std::make_unique<EldenAnimation>(getNodeMap(), *mObjectRoot, mEldenAnimationBank);
+                mEldenAnimation = std::make_unique<EldenAnimation>(
+                    getNodeMap(), *mObjectRoot, mEldenAnimationBank, isCreature);
                 if (!mEldenAnimation->valid())
                     mEldenAnimation.reset();
             }
@@ -1723,7 +1728,7 @@ namespace MWRender
     }
 
     bool Animation::playEldenAnimation(std::string_view clip, float frame, bool loop, float duration, float yaw,
-        std::string_view leftArm, std::string_view rightArm, std::string_view grip)
+        std::string_view leftArm, std::string_view rightArm, std::string_view grip, bool upperBodyOnly)
     {
         if (mEldenAnimation)
         {
@@ -1731,7 +1736,8 @@ namespace MWRender
             if (!grip.empty())
                 MWMechanics::getActiveWeapon(mPtr, &weaponType);
             if (mEldenAnimation->play(clip, frame, loop, duration, yaw, leftArm, rightArm, grip,
-                    weaponType == ESM::WeaponType::SpearTwoWide, weaponType == ESM::WeaponType::LongBladeTwoHand))
+                    weaponType == ESM::WeaponType::SpearTwoWide, weaponType == ESM::WeaponType::LongBladeTwoHand,
+                    upperBodyOnly))
                 return true;
         }
         clearEldenAnimation();

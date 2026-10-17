@@ -36,6 +36,12 @@ class SourceCopy(unittest.TestCase):
             "apps/openmw/mwmechanics/character.cpp", "apps/openmw/mwmechanics/eldencombat.cpp",
             "apps/openmw/mwmechanics/eldencombat.hpp", "components/eldencombat/combat.cpp",
             "components/eldencombat/combat.hpp", "scripts/import_eldenring_timings.py",
+            "components/eldencombat/rollweighttests.cpp", "components/eldencombat/throwing.hpp",
+            "components/settings/categories/game.hpp", "apps/launcher/settingspage.cpp",
+            "apps/launcher/ui/settingspage.ui", "apps/openmw/mwrender/animation.cpp",
+            "apps/openmw/mwrender/animation.hpp", "apps/openmw/mwrender/eldenanimation.cpp",
+            "apps/openmw/mwrender/eldenanimation.hpp", "CI/eldenring-test-throwing.cpp",
+            "CI/eldenring-test-spear.cpp", "CI/eldenring-test-animation-install.py", "ELDEN-COMBAT.txt",
             "scripts/import_eldenring_sounds.py", "CI/eldenring-test-jump.cpp",
             "files/openmw.cfg", "files/settings-default.cfg", "files/data/fonts/font.ttf",
             "files/data/scripts/input.lua", "files/data-mw/scripts/music.lua", "files/data/builtin.omwscripts",
@@ -198,8 +204,8 @@ class SourceCopy(unittest.TestCase):
         self.assertFalse(self.destination.exists())
 
     def test_native_copier_rejects_incomplete_animations_before_copying(self):
-        # An old bank still has ERAN magic, but cannot supply the new seal
-        # gestures. Refuse it before replacing source files or existing assets.
+        # An old bank still has ERAN magic, but cannot supply new seal gestures,
+        # dart throws or landing phases. Preserve source files and existing assets.
         previous = self.destination / "local-assets/player_anims.bin"
         previous.parent.mkdir(parents=True)
         previous.write_bytes(self.animation_bank())
@@ -208,6 +214,7 @@ class SourceCopy(unittest.TestCase):
                      self.animation_bank(missing={"a417_045011"}),
                      self.animation_bank(missing={"a023_031070"}),
                      self.animation_bank(missing={"a023_031071"}),
+                     self.animation_bank(missing={"a000_050170"}),
                      b"ERAN truncated bank"):
             with self.subTest(bytes=len(bank)):
                 self.animation.write_bytes(bank)
@@ -217,6 +224,33 @@ class SourceCopy(unittest.TestCase):
                 self.assertIn("Animation installation failed", result.stdout + result.stderr)
                 self.assertEqual(previous.read_bytes(), original)
                 self.assertFalse((self.destination / "CMakeLists.txt").exists())
+
+    def test_stale_staged_animation_cannot_hide_new_neighbor_without_explanation(self):
+        # The staged bank wins source selection. If it is old, refuse to modify
+        # the destination and explain how to select the complete neighboring bank.
+        neighbor = self.source.parent / "ELDEN-RING-Combat-Rewrite/assets/player_anims.bin"
+        neighbor.parent.mkdir(parents=True)
+        neighbor.write_bytes(self.animation_bank())
+        self.animation.write_bytes(self.animation_bank(missing={"a000_050170"}))
+        previous = self.destination / "local-assets/player_anims.bin"
+        previous.parent.mkdir(parents=True)
+        previous.write_bytes(neighbor.read_bytes())
+        previous_source = self.destination / "CMakeLists.txt"
+        previous_source.write_bytes(b"preserve previous source until bank validation succeeds\n")
+        result = subprocess.run(self.copy_command(), capture_output=True, text=True,
+                                errors="replace", timeout=60)
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("a000_050170", output)
+        self.assertIn("no source files were copied", output)
+        self.assertIn("replace local-assets", output)
+        self.assertIn("ELDEN-RING-Combat-Rewrite", output)
+        self.assertEqual(previous.read_bytes(), neighbor.read_bytes())
+        self.assertEqual(previous_source.read_bytes(), b"preserve previous source until bank validation succeeds\n")
+        self.animation.unlink()
+        self.animation = neighbor
+        self.run_copy()
+        self.verify()
 
     def test_native_copier_rejects_missing_sound_before_copying(self):
         for name in ("roll.ogg", "guard-counter.ogg", *(f"block-{i}.ogg" for i in range(4))):

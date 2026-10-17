@@ -4,7 +4,7 @@ MIT license: scripts/eldenring_music/LICENSE-MIT.txt.
 Contains no generated timings, animation poses, or game archives.
 
 diff --git a/tools/bake_anims.py b/tools/bake_anims.py
-index 96c3368..706e4d5 100644
+index 96c3368..ada5411 100644
 --- a/tools/bake_anims.py
 +++ b/tools/bake_anims.py
 @@ -8,8 +8,10 @@ into the sandbox's right-handed space (+X left, +Y up, +Z forward).
@@ -26,10 +26,11 @@ index 96c3368..706e4d5 100644
  
  JOINTS = [
      "Pelvis", "Spine", "Spine1", "Spine2", "Neck", "Head",
-@@ -50,8 +53,30 @@ EXTRA = [
+@@ -50,8 +53,31 @@ EXTRA = [
      ("a00", 202040),   # airborne loop, for jumps and falls alike
      ("a00", 4000),     # start of a fall off a ledge
      ("a00", 17002),    # death
++    ("a00", 50170),    # Bone Dart / Throwing Dagger: TAE 65 releases at frame 40
 +    ("a433", 45000), ("a433", 45010),  # Urgent Heal: windup, cast (self)
 +    ("a506", 45000), ("a506", 45010),  # Catch Flame: windup, cast (touch)
 +    ("a417", 45000), ("a417", 45011),  # Flame Sling: windup, uncharged cast (target)
@@ -57,7 +58,7 @@ index 96c3368..706e4d5 100644
  STANCE_IDLE, STANCE_GUARD = 0, 100
  # ...and the run's stop in each direction.
  STANCE_LOCOMOTION = (20000, 20001, 20002, 20003, 20100, 20101, 20102, 20103, 20200, 22100, 22101, 22102, 22103)
-@@ -65,6 +90,32 @@ def mirror(v):
+@@ -65,6 +91,32 @@ def mirror(v):
      return (v[0], v[1], -v[2])
  
  
@@ -90,7 +91,7 @@ index 96c3368..706e4d5 100644
  def wanted_clips(src, gathered=None):
      """(TAE file, animation id) of every clip the sandbox plays, in a stable order.
      `gathered` is extract.gather(src), if the caller already has it."""
-@@ -93,6 +144,15 @@ def main():
+@@ -93,6 +145,15 @@ def main():
          for _, n, d in open_bnd(SRC / f"{pack}.anibnd.dcx"):
              if n.endswith(".hkx"):
                  hkx.setdefault(PureWindowsPath(n).stem, d)
@@ -106,7 +107,7 @@ index 96c3368..706e4d5 100644
      src.hkx = hkx
  
      joint_index = [names.index(j) for j in JOINTS]
-@@ -105,13 +165,20 @@ def main():
+@@ -105,13 +166,20 @@ def main():
          source = src.hkx_name(file, anim_id)
          anim = hkanim.Animation(hkx[source])
          blend = blend_frames(src, file, anim_id)
@@ -130,7 +131,7 @@ index 96c3368..706e4d5 100644
              model = fk(parents, local)
              row = []
              for i in joint_index:
-@@ -124,7 +191,9 @@ def main():
+@@ -124,7 +192,9 @@ def main():
          clips.append((name, blend, frames))
  
      OUT.parent.mkdir(exist_ok=True)
@@ -141,7 +142,7 @@ index 96c3368..706e4d5 100644
          f.write(b"ERAN")
          f.write(struct.pack("<III", len(JOINTS), len(ORIENTED), len(clips)))
          for group in (JOINTS, ORIENTED):
-@@ -137,6 +206,7 @@ def main():
+@@ -137,6 +207,7 @@ def main():
              f.write(struct.pack("<fI", blend, len(frames)))
              for row in frames:
                  f.write(struct.pack("<%df" % len(row), *row))

@@ -18,6 +18,15 @@ of also receiving the native short random sidesteps.
 
 Movement and imported poses
 
+Imported poses now apply to NPCs and compatible bipedal creatures, including
+skeletons, dremoras and golden saints. Creature support is determined from the
+actual NIF skeleton: the humanoid pelvis, neck, head, both arms and both legs
+must be present and usable. The adapter preserves native meshes, bone lengths
+and equipment attachments. These creatures share the imported locomotion,
+melee, guard, dodge, reaction and death poses, plus supported casting and
+throwing gestures. Nonhumanoid, incomplete and unsupported skeletons retain
+their native animations; missing clips also fall back to native poses.
+
 With Turn to movement direction enabled, unlocked third-person walking,
 running and crouching use forward Elden clips facing the smoothed direction
 of travel. Lock-on and the disabled setting retain directional walk/run
@@ -102,19 +111,41 @@ OpenMW's actual spell event. Magicka, success/failure, effects, spell selection
 and recovery remain controlled by OpenMW. These are range-based casting poses;
 they do not add a seal item, Elden Ring spell effects or new spell mechanics.
 
-Player and NPC casts use the same mapping. First-person, moving, crouched,
-airborne, swimming and unsupported creature/rig poses keep their existing
-animation behavior. Scripted animation overrides also retain control. Missing
-clips or invalid spell text keys fall back to native casting. The full-body
+Player, NPC and compatible humanoid creature casts use the same mapping.
+First-person, moving, crouched, airborne, swimming and unsupported creature/rig
+poses keep their existing animation behavior. Scripted animation overrides also
+retain control. Missing clips or invalid spell text keys fall back to native
+casting. The full-body
 source gestures are currently used only while standing still to avoid
 overriding walking legs.
 Enchanted items use them only when native magic-item casting animations are on.
 
 Rebuild the engine and install the expanded player_anims.bin together. The
 existing CI/eldenring-update-windows.ps1 command below copies both. The installer
-rejects older banks missing any of the six incantation phases. For regeneration,
-the selective unpacker now also includes chr/c0000_a9x.anibnd.dcx; see
+rejects older banks missing any of the six incantation phases or the dart throw.
+For regeneration, the selective unpacker now also includes
+chr/c0000_a9x.anibnd.dcx; see
 CI/eldenring-assets.txt. No installed game files are modified by extraction.
+
+Dart throwing animations
+
+Native thrown weapons, including darts, now use the imported Elden Ring
+Bone Dart / throwing-dagger gesture, a000_050170, with Elden combat enabled.
+Preparation, the held ready pose, release and follow-through follow the native
+shoot text keys. The imported release frame matches the actual projectile
+release; holding or releasing attack early still uses OpenMW's attack-strength
+rules. Native code continues to launch one projectile, consume the thrown item,
+aim it and determine damage and enchantments.
+
+Stationary grounded third-person throws use the full-body gesture. Moving,
+crouched, airborne and first-person throws apply the imported upper body while
+preserving native lower-body movement and camera positioning. Players, NPCs
+and compatible humanoid creatures share the gesture. Unsupported rigs, missing
+clips and invalid shoot text keys keep native throwing animations. Swimming,
+flight and scripted animations retain their existing behavior. Bows and
+crossbows keep their native animations. Rebuild the engine and install the
+expanded player_anims.bin together; older banks without a000_050170 are rejected
+by the animation installer and Windows copy/build helpers.
 
 Regional and boss music, and existing saves
 
@@ -359,16 +390,18 @@ Status and fidelity
 
 This is an engine integration under development, not a tested, complete replica
 of Elden Ring. The engine now loads the locally baked player_anims.bin and
-retargets its sampled poses to standard Morrowind NPC skeletons. Attacks use
-their imported clip identifiers and source frames, synchronized to weapon
-speed and hit-stop. Dodges, reactions, death, weapon stances, guard arm layers
+retargets its sampled poses to standard Morrowind NPC and compatible humanoid
+creature skeletons. Attacks use their imported clip identifiers and source
+frames, synchronized to weapon speed and hit-stop. Dodges, reactions, death,
+weapon stances, guard arm layers
 and directional locomotion also use the baked player clips when available.
-Stationary third-person spellcasts use the seal gestures described above.
+Stationary third-person spellcasts use the seal gestures described above;
+thrown weapons use the imported dart gesture synchronized to native release.
 The original native tracks still provide movement/text-key bookkeeping.
 Elden Ring parrying, weapon skills and stat
 scaling are also absent from the supplied recreation.
 
-Code and asset audit, 2026-10-14
+Code and asset audit, 2026-10-17
 
 The local timing header is regenerated from extracted.rs: 1,080
 mapped action definitions covering 25 extracted weapon classes. The Windows
@@ -376,11 +409,12 @@ project must be rebuilt with the new header, including clip/stance metadata.
 Native equipment currently selects only 11 of those classes, including shield
 and torch; native weapon types do not identify every Elden Ring moveset.
 
-All 1,479 original clips and the six added incantation phases are present in the
-local player_anims.bin (1,485 clips, 92,413 frames). Binary structure, clip
-references and all 13,030,233 pose values pass validation. This covers the selected
-player clips, not every player/enemy animation in Elden Ring. The ERAN loader
-shares one immutable bank across actors. The retargeter preserves native bone
+All 1,479 original clips, six added incantation phases and the dart throw are
+present in the local player_anims.bin (1,486 clips, 92,494 frames). Binary
+structure, clip references and all 13,041,654 pose values pass validation.
+This covers the selected player clips, not every player/enemy animation in
+Elden Ring. The ERAN loader shares one immutable bank across actors. The
+retargeter preserves native bone
 lengths/scales and applies sampled poses after native keyframes, before skinning.
 Native two-joint fingers use their own bind directions, including the terminal
 knuckle bend; the native index finger now follows the imported finger curl too.
@@ -493,13 +527,35 @@ direction and facing so navigation cannot redirect them toward walls or gaps.
 Guard counters can start during block recoil when the attack pause has elapsed.
 These controls apply to NPCs using Elden combat; player controls are unchanged.
 
+Tune player and humanoid AI roll distance in the launcher under Settings >
+Gameplay > Elden combat roll distances. The group checkbox enables weight-based
+distances and custom load thresholds; uncheck it to restore legacy distances
+and the original 30%/70% load thresholds. The defaults are:
+
+  [Game]
+  elden ring weight based roll distance = true
+  elden ring light roll threshold = 0.30
+  elden ring heavy roll threshold = 0.70
+  elden ring light roll distance = 4.33
+  elden ring medium roll distance = 3.65
+  elden ring heavy roll distance = 3.31
+
+Equipped-item weight divided by carrying capacity selects light (under 30%),
+medium (30% to under 70%) or heavy (70% and above) equipment load by default.
+Ammunition and unequipped loot do not affect this tier. Thresholds are fractions
+from 0 to 1 in settings.cfg and percentages in the launcher. The launcher keeps
+them ordered; reversed values in the configuration file are sorted at runtime.
+Distances are meters from 0.1 to 20 and apply to completed rolls and crouch rolls
+on clear ground. Obstacles and early cancellation can shorten a roll. Distance
+scaling preserves the selected roll's timing and invincibility windows and does
+not change backstep distances. Existing Morrowind encumbrance still affects
+locomotion.
+
 Fatigue is the stamina display. Costs and regeneration scale to the actor's
-fatigue maximum. Worn-item weight, divided by carrying capacity, selects light
-(under 30%), medium (under 70%) or heavy equipment load; unequipped loot does
-not affect this tier. Existing Morrowind encumbrance still affects locomotion.
-Spellcasting, swimming, flight, scripted animations and disabled player control
-retain the engine's appropriate existing behavior. Combat input and action
-state are transient across load, death, resurrection and teleportation.
+fatigue maximum. Spellcasting, swimming, flight, scripted animations and
+disabled player control retain the engine's appropriate existing behavior.
+Combat input and action state are transient across load, death, resurrection
+and teleportation.
 Opening a menu cancels buffered/current attacks and heavy charging without
 resetting stamina, stance, critical vulnerability or defensive reactions.
 
@@ -602,7 +658,7 @@ can be configured independently of the engine:
   ctest --test-dir build-eldencombat --output-on-failure
   python3 scripts/import_eldenring_timings.py --self-test
 
-Twelve standalone CMake/CTest suites pass, covering controller behavior, damage,
+The standalone CMake/CTest suites cover controller behavior, damage,
 jump/landing transitions, locomotion, spellcasting, physical input and chord
 routing, obstacle escape directions, the ERAN parser/sampler, the actual imported
 game table, and AI timing with both fallback and imported data. The imported
@@ -617,6 +673,11 @@ imported action and idle/guard stance resolves to a baked clip, including all
 244 jump-attack landing clips and their recovery lengths. Jump regressions cover
 early/late touchdown, hit-stop, buffered attacks, pending takeoff, completed hits,
 three render rates and weapon speeds, and returning to idle or held sprint.
+Roll-distance regressions check threshold boundaries, malformed settings,
+actual travel with imported and fallback motion, and equipment changes before
+and during buffered rolls. Dart regressions cover preparation, held charge,
+release and recovery timing, invalid text keys and the locally baked source
+clip across playback speeds and update rates.
 Engine checks
 compile affected units to native Clang 18 C++20 objects; they do not link or run
 the complete Windows engine.
@@ -720,8 +781,9 @@ toolchains. It includes the generated timing header and copies the validated
 animation bank to local-assets/player_anims.bin and available imported music to
 local-assets/music/eldenring, plus dodge, block and counter recordings to
 local-assets/sound/eldenring/dodge for the Windows build helper. Both copy paths
-validate the full animation inventory before writing: the current 1,485-clip
-bank includes all six seal/incantation phases and 244 jump-attack landing clips.
+validate the full animation inventory before writing: the current 1,486-clip
+bank includes all six seal/incantation phases, the dart throw and 244 jump-attack
+landing clips.
 An older bank with only the ERAN
 header and melee clips is rejected before changing destination files. Imported
 audio currently includes 15 combat recordings and 28 music recordings; their

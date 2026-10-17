@@ -207,7 +207,7 @@ namespace
         }
 
         explicit Rig(std::shared_ptr<const EldenCombat::AnimationBank> bank, bool armHelper = false,
-            bool stockFingers = false)
+            bool stockFingers = false, bool requireFullBody = false)
         {
             auto* pelvis = bone("bip01 pelvis", mRoot.get(), {0, 0, 60});
             auto* spine = bone("bip01 spine", pelvis, {0, 0, 10});
@@ -263,7 +263,8 @@ namespace
             }
             mWeapon = bone("weapon bone", mHand.get(), mNative->mTranslation);
             mWeapon->setRotation(mNative->mRotation);
-            mAnimation = std::make_unique<MWRender::EldenAnimation>(mNodes, *mRoot, std::move(bank));
+            mAnimation = std::make_unique<MWRender::EldenAnimation>(
+                mNodes, *mRoot, std::move(bank), requireFullBody);
             check(mAnimation->valid(), "fixture rig was rejected");
             // Model base_anim's permanent controller: restore must precede it.
             mWeapon->addUpdateCallback(mNative.get());
@@ -297,6 +298,110 @@ namespace
             update();
         }
     };
+
+    void humanoidCreatureRigs()
+    {
+        auto bank = fixtureBank(true, true);
+        Rig humanoid(bank, true, true, true);
+        const osg::Quat native = humanoid.modelRotation(humanoid.mNodes.at("bip01 pelvis").get());
+        humanoid.play("a000_000000", 1.f, 1.f, false, 0.f, {});
+        check(!close(native, humanoid.modelRotation(humanoid.mNodes.at("bip01 pelvis").get())),
+            "complete humanoid creature kept its native pose");
+        humanoid.mAnimation->clear();
+
+        // Creature meshes need not have the optional NPC fingers, toes, or
+        // intermediate spine joints to share its humanoid motion.
+        auto minimal = humanoid.mNodes;
+        std::erase_if(minimal, [](const auto& entry) {
+            return entry.first.find("finger") != std::string::npos
+                || entry.first.find("toe") != std::string::npos || entry.first == "bip01 spine";
+        });
+        MWRender::EldenAnimation compatible(minimal, *humanoid.mRoot, bank, true);
+        check(compatible.valid(), "humanoid creature without optional bones was rejected");
+        check(compatible.play("a000_000000", 1.f, true, 1.f), "compatible creature could not play an imported clip");
+        compatible.clear();
+
+        for (const char* missing : { "bip01 head", "bip01 pelvis", "bip01 neck",
+                 "bip01 l upperarm", "bip01 r forearm", "bip01 l hand",
+                 "bip01 l thigh", "bip01 r calf", "bip01 l foot" })
+        {
+            auto incomplete = minimal;
+            incomplete.erase(missing);
+            MWRender::EldenAnimation unsupported(incomplete, *humanoid.mRoot, bank, true);
+            check(!unsupported.valid(), "non-humanoid creature accepted a partial body");
+            check(unsupported.controllers().empty(), "unsupported creature installed pose callbacks");
+            check(!unsupported.play("a000_000000", 1.f, true, 1.f),
+                "unsupported creature replaced its native animation");
+        }
+
+        // Entirely absent limbs remain supported by first-person NPC rigs,
+        // but must not let a creature with only a few shared names opt in.
+        Rig partial(bank);
+        MWRender::EldenAnimation unsupported(partial.mNodes, *partial.mRoot, bank, true);
+        check(!unsupported.valid(), "creature with an absent arm was accepted as a humanoid");
+        check(partial.mAnimation->valid(), "first-person partial rig support regressed");
+
+        auto* calf = static_cast<NifOsg::MatrixTransform*>(humanoid.mNodes.at("bip01 r calf").get());
+        const osg::Vec3f calfTranslation = calf->getMatrix().getTrans();
+        calf->setTranslation({});
+        MWRender::EldenAnimation degenerate(humanoid.mNodes, *humanoid.mRoot, bank, true);
+        check(!degenerate.valid(), "zero-length creature limb was accepted");
+        calf->setTranslation(calfTranslation);
+    }
+
+    void upperBodyOverNativeLocomotion()
+    {
+        auto bank = fixtureBank(true, true);
+        Rig target(bank, true, true), layered(bank, true, true);
+        target.play("a000_000000", 1.f, 1.f, false, 0.f, {});
+        const auto nativeController = [&](const char* name, osg::Vec3f translation) {
+            osg::ref_ptr<NativeWeapon> native = new NativeWeapon;
+            native->mTranslation = translation;
+            native->mRotation = osg::Quat(.6f, osg::Vec3f(0, 1, 0));
+            native->mScale = 1.f;
+            auto* node = layered.mNodes.at(name).get();
+            native->setNestedCallback(node->getUpdateCallback());
+            node->setUpdateCallback(native);
+            return native;
+        };
+        auto pelvis = nativeController("bip01 pelvis", {3.f, 4.f, 50.f});
+        auto calf = nativeController("bip01 r calf", {0.f, 2.f, -24.f});
+        auto spine = nativeController("bip01 spine", {0.f, 0.f, 12.f});
+        check(layered.mAnimation->play("a000_000000", 1.f, false, 1.f, 0.f, {}, {}, {}, false, false, true),
+            "upper-body clip was rejected");
+        for (int frame = 0; frame != 3; ++frame)
+        {
+            // The same pose must follow native ancestors updated after play,
+            // rather than using the pelvis from the previous simulation tick.
+            pelvis->mTranslation.x() += 2.f;
+            pelvis->mRotation = osg::Quat(.2f * frame, osg::Vec3f(0, 0, 1));
+            layered.update();
+            for (const auto& [name, native] : {
+                     std::pair{ "bip01 pelvis", pelvis }, std::pair{ "bip01 r calf", calf } })
+            {
+                auto* node = static_cast<NifOsg::MatrixTransform*>(layered.mNodes.at(name).get());
+                check(close(node->getMatrix().getTrans(), native->mTranslation),
+                    "upper-body pose overwrote native lower-body translation");
+                check(close(node->mRotationScale.toOsgMatrix().getRotate(), native->mRotation),
+                    "upper-body pose overwrote native lower-body rotation");
+            }
+            check(close(layered.mNodes.at("bip01 spine")->getMatrix().getTrans(), spine->mTranslation),
+                "upper-body pose overwrote native torso translation");
+            for (const char* name : { "bip01 spine", "bip01 neck", "bip01 r hand", "bip01 l hand" })
+                check(close(layered.modelRotation(layered.mNodes.at(name).get()),
+                          target.modelRotation(target.mNodes.at(name).get())),
+                    "native pelvis rotation changed imported upper-body orientation");
+        }
+        const osg::Matrixf before = layered.mNodes.at("bip01 pelvis")->getMatrix();
+        layered.mAnimation->clear();
+        check(layered.mNodes.at("bip01 pelvis")->getMatrix() == before,
+            "clearing an upper-body pose reset native locomotion");
+        check(close(layered.mNodes.at("bip01 spine")->getMatrix().getTrans(), spine->mTranslation),
+            "clearing an upper-body pose reset native torso translation");
+        layered.play("a000_000000", 1.f, 1.f, false, 0.f, {});
+        check(close(layered.modelRotation(layered.mHand.get()), target.modelRotation(target.mHand.get())),
+            "returning to full-body animation retained an upper-body mask");
+    }
 
     void poseBlending()
     {
@@ -755,6 +860,8 @@ int main(int argc, char** argv)
     try
     {
         regression();
+        humanoidCreatureRigs();
+        upperBodyOverNativeLocomotion();
         poseBlending();
         directionReversals();
         repeatedActions();

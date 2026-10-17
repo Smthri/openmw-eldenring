@@ -94,11 +94,13 @@ if ($musicPython) { $musicPythonArguments = @('-3') }
 else { $musicPython = Get-Command 'python.exe' -ErrorAction SilentlyContinue }
 if (-not $musicPython) { throw 'Python 3.10+ is required to validate copied source and local assets.' }
 if ($AnimationsSource) {
-    # Check the complete bank, including all six seal phases. SourceDirectory
+    # Check the complete bank, including seal phases and dart throws. SourceDirectory
     # can differ from this script's location, so use its matching timing header.
     & $musicPython.Source @musicPythonArguments (Join-Path $SourceDirectory 'scripts\install_eldenring_animations.py') `
         --source $AnimationsSource --timings-header $timingHeader --check-only
-    if ($LASTEXITCODE -ne 0) { throw 'Animation validation failed; no source files were copied.' }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Animation validation failed for '$AnimationsSource'; no source files were copied. Rebake with the updated animation importer and replace local-assets\player_anims.bin, or pass -AnimationsSource with the complete neighboring ELDEN-RING-Combat-Rewrite\assets\player_anims.bin."
+    }
 }
 $musicInstaller = Join-Path $SourceDirectory 'scripts\install_eldenring_music.py'
 if ($MusicSource) {

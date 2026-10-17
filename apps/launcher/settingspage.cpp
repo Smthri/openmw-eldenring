@@ -1,5 +1,6 @@
 #include "settingspage.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <string>
@@ -8,6 +9,7 @@
 #include <QDesktopServices>
 #include <QFileDialog>
 #include <QMenu>
+#include <QSignalBlocker>
 #include <QString>
 
 #include <components/config/gamesettings.hpp>
@@ -119,6 +121,17 @@ Launcher::SettingsPage::SettingsPage(
     }
 
     loadSettings();
+
+    connect(eldenLightRollThresholdSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+        [this](double value) {
+            if (value > eldenHeavyRollThresholdSpinBox->value())
+                eldenHeavyRollThresholdSpinBox->setValue(value);
+        });
+    connect(eldenHeavyRollThresholdSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+        [this](double value) {
+            if (value < eldenLightRollThresholdSpinBox->value())
+                eldenLightRollThresholdSpinBox->setValue(value);
+        });
 
     mCellNameCompleter.setModel(&mCellNameCompleterModel);
     startDefaultCharacterAtField->setCompleter(&mCellNameCompleter);
@@ -249,6 +262,18 @@ bool Launcher::SettingsPage::loadSettings()
         eldenAiBlockChanceSpinBox->setValue(Settings::game().mEldenRingAiBlockChance * 100.0);
         eldenAiDodgeChanceSpinBox->setValue(Settings::game().mEldenRingAiDodgeChance * 100.0);
         eldenAiReactionTimeSpinBox->setValue(Settings::game().mEldenRingAiReactionTime);
+        eldenCombatRollGroupBox->setEnabled(Settings::game().mEldenRingCombat);
+        eldenCombatRollGroupBox->setChecked(Settings::game().mEldenRingWeightBasedRollDistance);
+        const auto finiteValue = [](float value, float fallback) { return std::isfinite(value) ? value : fallback; };
+        const double lightThreshold = finiteValue(Settings::game().mEldenRingLightRollThreshold, 0.30f) * 100.0;
+        const double heavyThreshold = finiteValue(Settings::game().mEldenRingHeavyRollThreshold, 0.70f) * 100.0;
+        const QSignalBlocker lightThresholdSignals(eldenLightRollThresholdSpinBox);
+        const QSignalBlocker heavyThresholdSignals(eldenHeavyRollThresholdSpinBox);
+        eldenLightRollThresholdSpinBox->setValue(std::min(lightThreshold, heavyThreshold));
+        eldenHeavyRollThresholdSpinBox->setValue(std::max(lightThreshold, heavyThreshold));
+        eldenLightRollDistanceSpinBox->setValue(finiteValue(Settings::game().mEldenRingLightRollDistance, 4.33f));
+        eldenMediumRollDistanceSpinBox->setValue(finiteValue(Settings::game().mEldenRingMediumRollDistance, 3.65f));
+        eldenHeavyRollDistanceSpinBox->setValue(finiteValue(Settings::game().mEldenRingHeavyRollDistance, 3.31f));
     }
 
     // Visuals
@@ -543,6 +568,12 @@ void Launcher::SettingsPage::saveSettings()
         Settings::game().mEldenRingAiBlockChance.set(eldenAiBlockChanceSpinBox->value() / 100.0);
         Settings::game().mEldenRingAiDodgeChance.set(eldenAiDodgeChanceSpinBox->value() / 100.0);
         Settings::game().mEldenRingAiReactionTime.set(eldenAiReactionTimeSpinBox->value());
+        Settings::game().mEldenRingWeightBasedRollDistance.set(eldenCombatRollGroupBox->isChecked());
+        Settings::game().mEldenRingLightRollThreshold.set(eldenLightRollThresholdSpinBox->value() / 100.0);
+        Settings::game().mEldenRingHeavyRollThreshold.set(eldenHeavyRollThresholdSpinBox->value() / 100.0);
+        Settings::game().mEldenRingLightRollDistance.set(eldenLightRollDistanceSpinBox->value());
+        Settings::game().mEldenRingMediumRollDistance.set(eldenMediumRollDistanceSpinBox->value());
+        Settings::game().mEldenRingHeavyRollDistance.set(eldenHeavyRollDistanceSpinBox->value());
     }
 
     // Visuals

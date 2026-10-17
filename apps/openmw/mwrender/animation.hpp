@@ -461,8 +461,10 @@ namespace MWRender
         virtual osg::Vec3f runAnimation(float duration);
 
         // The combat controller owns this clock, including hit-stop and weapon speed.
+        bool hasEldenAnimation() const { return mEldenAnimation != nullptr; }
         bool playEldenAnimation(std::string_view clip, float frame, bool loop, float duration, float yaw = 0.f,
-            std::string_view leftArm = {}, std::string_view rightArm = {}, std::string_view grip = {});
+            std::string_view leftArm = {}, std::string_view rightArm = {}, std::string_view grip = {},
+            bool upperBodyOnly = false);
         void clearEldenAnimation();
         float getEldenAnimationLength(std::string_view clip) const;
 

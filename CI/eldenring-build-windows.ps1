@@ -488,10 +488,12 @@ if ($buildLauncher) {
 }
 $ctest = Join-Path (Split-Path -Parent $cmake) 'ctest.exe'
 if (-not (Test-Path -LiteralPath $ctest)) { throw 'ctest.exe is missing from the CMake installation.' }
-Invoke-Checked $ctest @('--test-dir', $BuildDirectory, '-C', $Configuration, '-R', '^elden((combat|ai|damage)(-imported)?|input|animation|locomotion|navigation|spear|retarget|grip|jump|spellcasting)$', '--output-on-failure', '--no-tests=error')
+Invoke-Checked $ctest @('--test-dir', $BuildDirectory, '-C', $Configuration, '-R', '^elden((combat|ai|damage|rollweight)(-imported)?|input|animation|locomotion|navigation|spear|retarget|grip|jump|spellcasting|throwing)$', '--output-on-failure', '--no-tests=error')
 if ($AnimationsSource) {
     # Verify the incantation clips and their release frames in the packaged bank.
     Invoke-Checked (Join-Path $binaryDirectory 'eldenspellcasting-tests.exe') @($AnimationsSource)
+    # Verify the dart clip and its projectile release pose in the packaged bank.
+    Invoke-Checked (Join-Path $binaryDirectory 'eldenthrowing-tests.exe') @($AnimationsSource)
     # Check arm/knee/foot reconstruction in actual combat clips and movement loops.
     Invoke-Checked (Join-Path $binaryDirectory 'eldenretarget-tests.exe') @($AnimationsSource)
     # Exercise the production retargeter against imported finger stances and
