@@ -50,6 +50,21 @@ namespace MWRender
         constexpr std::size_t sNoParent = std::numeric_limits<std::size_t>::max();
         using JointPositions = std::array<osg::Vec3f, JointCount>;
 
+        bool upperBodyJoint(std::size_t joint)
+        {
+            return (joint >= Spine && joint <= RHand) || (joint >= LFinger0 && joint < JointCount);
+        }
+
+        osg::Quat nodeRotation(const osg::MatrixTransform& node)
+        {
+            if (const auto* nif = dynamic_cast<const NifOsg::MatrixTransform*>(&node))
+                return nif->mRotationScale.toOsgMatrix().getRotate();
+            osg::Vec3f translation, scale;
+            osg::Quat rotation, scaleOrientation;
+            node.getMatrix().decompose(translation, rotation, scale, scaleOrientation);
+            return rotation;
+        }
+
         osg::Vec3f unit(osg::Vec3f value, const osg::Vec3f& fallback)
         {
             if (value.length2() < 1e-10f)
@@ -242,6 +257,7 @@ namespace MWRender
             osg::Quat mRestModelRotation;
             osg::Quat mCorrection;
             LocalPose mShown;
+            osg::Quat mShownModelRotation;
             LocalPose mFrom;
             osg::Quat mFromModelRotation;
         };
@@ -264,8 +280,24 @@ namespace MWRender
             {
                 if (const auto state = mState.lock(); state && state->mEnabled)
                 {
-                    const Bone& bone = state->mBones[mIndex];
-                    if (bone.mJoint == sNoJoint && !dynamic_cast<NifOsg::MatrixTransform*>(node))
+                    Bone& bone = state->mBones[mIndex];
+                    if (state->mUpperBodyOnly)
+                    {
+                        if (upperBodyJoint(bone.mJoint))
+                        {
+                            // Native locomotion has just updated the pelvis
+                            // and other ancestors. Resolve the imported upper
+                            // body's model-space rotation against that current
+                            // pose, preserving native translations and scale.
+                            osg::Quat parent;
+                            for (std::size_t i = bone.mParent; i != sNoParent; i = state->mBones[i].mParent)
+                                parent *= nodeRotation(*state->mBones[i].mNode);
+                            bone.mShown.mRotation = bone.mShownModelRotation * parent.inverse();
+                            bone.mShown.mTranslation = node->getMatrix().getTrans();
+                            static_cast<NifOsg::MatrixTransform*>(node)->setRotation(bone.mShown.mRotation);
+                        }
+                    }
+                    else if (bone.mJoint == sNoJoint && !dynamic_cast<NifOsg::MatrixTransform*>(node))
                         node->setMatrix(bone.mRestMatrix);
                     else
                         applyPose(*node, bone.mShown, bone.mScale);
@@ -351,6 +383,7 @@ namespace MWRender
         float mScale = 1.f;
         bool mValid = false;
         bool mEnabled = false;
+        bool mUpperBodyOnly = false;
 
         osg::ref_ptr<NifOsg::MatrixTransform> mWeaponNode;
         osg::NodePath mWeaponParents;
@@ -526,6 +559,12 @@ namespace MWRender
             mEnabled = false;
             for (const Bone& bone : mBones)
             {
+                if (mUpperBodyOnly)
+                {
+                    if (upperBodyJoint(bone.mJoint))
+                        static_cast<NifOsg::MatrixTransform*>(bone.mNode.get())->setRotation(bone.mRest.mRotation);
+                    continue;
+                }
                 if (bone.mJoint == sNoJoint)
                 {
                     // Keep NIF's decomposed state in step with its matrix.
@@ -545,7 +584,7 @@ namespace MWRender
     };
 
     EldenAnimation::EldenAnimation(const Animation::NodeMap& nodes, osg::Group& objectRoot,
-        std::shared_ptr<const EldenCombat::AnimationBank> bank)
+        std::shared_ptr<const EldenCombat::AnimationBank> bank, bool requireFullBody)
         : mImpl(std::make_shared<Impl>())
     {
         auto& state = *mImpl;
@@ -683,7 +722,8 @@ namespace MWRender
                 state.mHaveBindJoint[joint] = true;
             }
         }
-        if (!state.mHaveBindJoint[Pelvis] || !state.mHaveBindJoint[Neck])
+        if (!state.mHaveBindJoint[Pelvis] || !state.mHaveBindJoint[Neck]
+            || (requireFullBody && !state.mHaveBindJoint[Head]))
             return;
 
         const auto nativeFingerDirection = [&](std::size_t index) -> osg::Vec3f {
@@ -698,10 +738,11 @@ namespace MWRender
             return bone.mRestModelRotation * unit(bone.mRest.mTranslation, osg::Vec3f(1, 0, 0));
         };
 
-        // A fully absent limb is normal on first-person rigs. A partially
-        // present chain does not define the bind segment directions needed
-        // for retargeting; retain that replacement rig's native animation
-        // instead of calibrating its remaining bones against the origin.
+        // A fully absent limb is normal on first-person rigs, but creatures
+        // must have both human arms and legs. A partially present chain does
+        // not define the bind segment directions needed for retargeting;
+        // retain that rig's native animation instead of calibrating its
+        // remaining bones against the origin.
         for (const std::array<std::size_t, 3>& chain : {
                  std::array<std::size_t, 3>{ LUpperArm, LForearm, LHand },
                  std::array<std::size_t, 3>{ RUpperArm, RForearm, RHand },
@@ -711,14 +752,23 @@ namespace MWRender
         {
             const int present = int(state.mHaveBindJoint[chain[0]]) + int(state.mHaveBindJoint[chain[1]])
                 + int(state.mHaveBindJoint[chain[2]]);
-            if (present != 0 && present != 3)
+            if ((requireFullBody && present != 3) || (present != 0 && present != 3))
                 return;
+            if (requireFullBody)
+                for (std::size_t j = 1; j != chain.size(); ++j)
+                {
+                    const float length = (state.mBindJoints[chain[j]] - state.mBindJoints[chain[j - 1]]).length();
+                    if (!std::isfinite(length) || length < 1e-5f)
+                        return;
+                }
         }
 
         // Some first-person and replacement NIFs omit intermediate torso,
         // finger or leg bones. These virtual joints only define orientations;
         // no absent bone or mesh is created or translated.
         const osg::Vec3f torso = state.mBindJoints[Neck] - state.mBindJoints[Pelvis];
+        if (requireFullBody && (!std::isfinite(torso.length()) || torso.length() < 1e-5f))
+            return;
         for (std::size_t joint = Spine; joint <= Spine2; ++joint)
             if (!state.mHaveBindJoint[joint])
                 state.mBindJoints[joint] = state.mBindJoints[Pelvis] + torso * (float(joint) / 4.f);
@@ -878,7 +928,7 @@ namespace MWRender
 
     bool EldenAnimation::play(std::string_view clipName, float frame, bool loop, float duration, float yaw,
         std::string_view leftArmClip, std::string_view rightArmClip, std::string_view gripClip, bool alignSpear,
-        bool twoHandedSword)
+        bool twoHandedSword, bool upperBodyOnly)
     {
         auto& state = *mImpl;
         if (!state.mValid || !std::isfinite(frame) || !std::isfinite(yaw))
@@ -905,7 +955,8 @@ namespace MWRender
         const bool restarted = !loop && !state.mLoop && frame < state.mFrame;
         const bool clipChanged = state.mClip != clipName || restarted;
         const bool changed = clipChanged || state.mLeftArmClip != leftArmClip
-            || state.mRightArmClip != rightArmClip || state.mGripClip != gripClip || state.mAlignSpear != spear;
+            || state.mRightArmClip != rightArmClip || state.mGripClip != gripClip || state.mAlignSpear != spear
+            || state.mUpperBodyOnly != upperBodyOnly;
         state.mFrame = frame;
         state.mLoop = loop;
         if (!spear)
@@ -934,7 +985,7 @@ namespace MWRender
             state.mFadeLength = clipChanged ? clip->mBlendFrames / 30.f : 0.12f;
             for (Impl::Bone& bone : state.mBones)
             {
-                if (state.mEnabled)
+                if (state.mEnabled && (!state.mUpperBodyOnly || upperBodyJoint(bone.mJoint)))
                     bone.mFrom = bone.mShown;
                 else
                 {
@@ -1008,6 +1059,7 @@ namespace MWRender
                 // turn once for the whole body, independently of each bone's
                 // pose, so the chest and pelvis cannot take opposite paths.
                 shownModelRotation *= facing;
+                bone.mShownModelRotation = shownModelRotation;
                 // Blend the displayed anatomical orientation once. Blending
                 // every local joint independently compounds parent and child
                 // turns, making the wrist/weapon spin during roll recovery.
@@ -1035,6 +1087,7 @@ namespace MWRender
             && leftArmClip.empty() && rightArmClip.empty())
             state.closeSwordGrip(blend);
         state.mEnabled = true;
+        state.mUpperBodyOnly = upperBodyOnly;
         return true;
     }
 

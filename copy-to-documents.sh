@@ -64,10 +64,15 @@ if [[ ! -f "$_elden_animation" ]]; then
     echo 'Missing player_anims.bin: place your baked bank in openmw/local-assets/ before copying.' >&2
     exit 1
 fi
-# Validate the complete clip inventory, including both phases of each seal
-# gesture, before copying sources or replacing a usable destination bank.
-python3 "$_elden_source/scripts/install_eldenring_animations.py" --source "$_elden_animation" \
-    --timings-header "$_elden_source/components/eldencombat/imported_timings.hpp" --check-only
+# Validate the complete clip inventory, including seal gestures and dart throws,
+# before copying sources or replacing a usable destination bank.
+if ! python3 "$_elden_source/scripts/install_eldenring_animations.py" --source "$_elden_animation" \
+    --timings-header "$_elden_source/components/eldencombat/imported_timings.hpp" --check-only; then
+    echo "Animation validation failed for: $_elden_animation; no source files were copied." >&2
+    echo 'Rebake with the updated animation importer and replace local-assets/player_anims.bin with the complete bank.' >&2
+    echo 'If the neighboring ELDEN-RING-Combat-Rewrite/assets/player_anims.bin is already current, rename the stale local-assets/player_anims.bin so that bank is selected.' >&2
+    exit 1
+fi
 _elden_timing_hash="$(sha256sum < "$_elden_source/components/eldencombat/imported_timings.hpp")"
 _elden_animation_hash="$(sha256sum < "$_elden_animation")"
 _elden_music="$_elden_source/local-assets/music/eldenring"

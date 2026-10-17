@@ -160,6 +160,12 @@ namespace EldenCombat
         float mSprintDrain = 11.f;
         float mGuardStaminaTaken = 0.55f;
         float mSpeedMultiplier = 1.f;
+        // Horizontal roll distance in metres, selected from the current equipment-load tier.
+        // Captured in the action definition when a roll actually starts, including queued rolls.
+        bool mWeightBasedRollDistance = true;
+        float mLightRollDistance = 4.33f;
+        float mMediumRollDistance = 3.65f;
+        float mHeavyRollDistance = 3.31f;
         // Opt-in physical-hit protection; the world adapter enables this for the player only.
         float mPostHitProtectionSeconds = 0.f;
     };
@@ -336,6 +342,10 @@ namespace EldenCombat
         std::uint64_t sequence() const { return mSequence; }
 
         static bool isAttack(Action action);
+        // Threshold equality enters the heavier tier; invalid ratios conservatively select heavy.
+        static Load loadFromRatio(float ratio, float lightThreshold = 0.3f, float heavyThreshold = 0.7f);
+        // Validated configured distance; actionDefinition applies it only when the option is enabled.
+        static float rollDistance(const Config& config);
         static ActionDef actionDefinition(Action action, const Config& config, bool twoHanded = false);
         static std::array<float, 3> rootMotionAt(const ActionDef& definition, float frame);
 

@@ -203,8 +203,15 @@ namespace MWMechanics
             }
         }
         const float load = equipmentWeight / std::max(1.f, cls.getCapacity(actor));
-        config.mLoad = load < 0.3f ? EldenCombat::Load::Light
-            : load < 0.7f ? EldenCombat::Load::Medium : EldenCombat::Load::Heavy;
+        const auto& settings = Settings::game();
+        config.mWeightBasedRollDistance = settings.mEldenRingWeightBasedRollDistance;
+        config.mLoad = config.mWeightBasedRollDistance
+            ? EldenCombat::Controller::loadFromRatio(load,
+                settings.mEldenRingLightRollThreshold, settings.mEldenRingHeavyRollThreshold)
+            : EldenCombat::Controller::loadFromRatio(load);
+        config.mLightRollDistance = settings.mEldenRingLightRollDistance;
+        config.mMediumRollDistance = settings.mEldenRingMediumRollDistance;
+        config.mHeavyRollDistance = settings.mEldenRingHeavyRollDistance;
         return config;
     }
 

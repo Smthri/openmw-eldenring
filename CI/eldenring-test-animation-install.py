@@ -97,6 +97,15 @@ class AnimationInstallation(unittest.TestCase):
             self.install()
         self.assertFalse(self.destination.exists())
 
+    def test_missing_dart_throw_preserves_installed_bank(self):
+        self.install()
+        original = self.destination.read_bytes()
+        self.source.write_bytes(self.bank(clips=self.clips - {"a000_050170"}))
+        with self.assertRaisesRegex(ValueError, "missing 1 required clips"):
+            self.install()
+        self.assertEqual(self.destination.read_bytes(), original)
+        self.assertFalse(self.backups.exists())
+
     def test_missing_incantation_phase_preserves_installed_bank(self):
         # Copied Windows trees have only the bank and imported header. They
         # must reject old banks even without the recreation's clip inventory.

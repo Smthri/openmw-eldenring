@@ -9,6 +9,7 @@
 #include <initializer_list>
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace EldenCombat
 {
@@ -119,6 +120,39 @@ namespace EldenCombat
             return std::isfinite(value) ? std::max(0.f, value) : fallback;
         }
 
+        float validatedRollDistance(float value, float fallback)
+        {
+            return std::clamp(std::isfinite(value) ? value : fallback, 0.1f, 20.f);
+        }
+
+        void configureRollDistance(ActionDef& definition, Action action, const Config& config)
+        {
+            if (!config.mWeightBasedRollDistance || (action != Action::Roll && action != Action::CrouchRoll))
+                return;
+
+            const float distance = Controller::rollDistance(config);
+            if (!definition.mRootMotion.empty())
+            {
+                const auto origin = Controller::rootMotionAt(definition, 0.f);
+                const auto endpoint = Controller::rootMotionAt(definition, definition.mDuration);
+                const float originalDistance = std::hypot(endpoint[0] - origin[0], endpoint[2] - origin[2]);
+                if (std::isfinite(originalDistance) && originalDistance > 0.00001f)
+                {
+                    const float scale = distance / originalDistance;
+                    for (auto& sample : definition.mRootMotion)
+                    {
+                        sample[0] = origin[0] + (sample[0] - origin[0]) * scale;
+                        sample[2] = origin[2] + (sample[2] - origin[2]) * scale;
+                    }
+                }
+                else
+                    // A stationary or malformed curve cannot supply horizontal travel.
+                    // Use the normal fallback curve with the configured distance instead.
+                    definition.mRootMotion.clear();
+            }
+            definition.mDistance = distance;
+        }
+
         float motionFraction(float frame, const ActionDef& definition)
         {
             // OpenMW uses its own physics and animation assets. This interpolation is a
@@ -157,6 +191,9 @@ namespace EldenCombat
         mConfig.mSprintDrain = nonnegative(config.mSprintDrain, 11.f);
         mConfig.mGuardStaminaTaken = nonnegative(config.mGuardStaminaTaken, 0.55f);
         mConfig.mSpeedMultiplier = std::clamp(nonnegative(config.mSpeedMultiplier, 1.f), 0.1f, 5.f);
+        mConfig.mLightRollDistance = validatedRollDistance(config.mLightRollDistance, 4.33f);
+        mConfig.mMediumRollDistance = validatedRollDistance(config.mMediumRollDistance, 3.65f);
+        mConfig.mHeavyRollDistance = validatedRollDistance(config.mHeavyRollDistance, 3.31f);
         mConfig.mPostHitProtectionSeconds = nonnegative(config.mPostHitProtectionSeconds);
         mStamina = std::clamp(mStamina, 0.f, mConfig.mMaximumStamina);
         mStance = std::clamp(mStance * mConfig.mMaximumStance / std::max(1.f, previousMaximumStance), 0.f,
@@ -173,6 +210,31 @@ namespace EldenCombat
     bool Controller::isAttack(Action action)
     {
         return (action >= Action::Light1 && action <= Action::PairedJump) || action == Action::Critical;
+    }
+
+    Load Controller::loadFromRatio(float ratio, float lightThreshold, float heavyThreshold)
+    {
+        lightThreshold = std::clamp(std::isfinite(lightThreshold) ? lightThreshold : 0.3f, 0.f, 1.f);
+        heavyThreshold = std::clamp(std::isfinite(heavyThreshold) ? heavyThreshold : 0.7f, 0.f, 1.f);
+        if (lightThreshold > heavyThreshold)
+            std::swap(lightThreshold, heavyThreshold);
+        if (!std::isfinite(ratio))
+            return Load::Heavy;
+        ratio = std::max(0.f, ratio);
+        return ratio < lightThreshold ? Load::Light : (ratio < heavyThreshold ? Load::Medium : Load::Heavy);
+    }
+
+    float Controller::rollDistance(const Config& config)
+    {
+        switch (config.mLoad)
+        {
+            case Load::Light:
+                return validatedRollDistance(config.mLightRollDistance, 4.33f);
+            case Load::Heavy:
+                return validatedRollDistance(config.mHeavyRollDistance, 3.31f);
+            default:
+                return validatedRollDistance(config.mMediumRollDistance, 3.65f);
+        }
     }
 
     std::array<float, 3> Controller::rootMotionAt(const ActionDef& definition, float frame)
@@ -209,8 +271,11 @@ namespace EldenCombat
     ActionDef Controller::actionDefinition(Action action, const Config& config, bool twoHanded)
     {
 #ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        if (const std::optional<ActionDef> imported = importedActionDefinition(action, config, twoHanded))
-            return *imported;
+        if (std::optional<ActionDef> imported = importedActionDefinition(action, config, twoHanded))
+        {
+            configureRollDistance(*imported, action, config);
+            return std::move(*imported);
+        }
 #endif
         ActionDef result;
         result.mDuration = 60.f;
@@ -418,6 +483,7 @@ namespace EldenCombat
                 result.mDodgeInputFrom = 57.f;
             }
         }
+        configureRollDistance(result, action, config);
         return result;
     }
 

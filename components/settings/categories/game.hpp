@@ -26,6 +26,17 @@ namespace Settings
         SettingValue<bool> mBestAttack{ mIndex, "Game", "best attack" };
         SettingValue<bool> mEldenRingCombat{ mIndex, "Game", "elden ring combat" };
         SettingValue<bool> mEldenRingMusic{ mIndex, "Game", "elden ring music" };
+        SettingValue<bool> mEldenRingWeightBasedRollDistance{ mIndex, "Game", "elden ring weight based roll distance" };
+        SettingValue<float> mEldenRingLightRollThreshold{ mIndex, "Game", "elden ring light roll threshold",
+            makeClampSanitizerFloat(0, 1) };
+        SettingValue<float> mEldenRingHeavyRollThreshold{ mIndex, "Game", "elden ring heavy roll threshold",
+            makeClampSanitizerFloat(0, 1) };
+        SettingValue<float> mEldenRingLightRollDistance{ mIndex, "Game", "elden ring light roll distance",
+            makeClampSanitizerFloat(0.1f, 20.f) };
+        SettingValue<float> mEldenRingMediumRollDistance{ mIndex, "Game", "elden ring medium roll distance",
+            makeClampSanitizerFloat(0.1f, 20.f) };
+        SettingValue<float> mEldenRingHeavyRollDistance{ mIndex, "Game", "elden ring heavy roll distance",
+            makeClampSanitizerFloat(0.1f, 20.f) };
         SettingValue<float> mEldenRingAiAttackDelay{ mIndex, "Game", "elden ring ai attack delay",
             makeClampSanitizerFloat(0, 10) };
         SettingValue<int> mEldenRingAiMaxComboAttacks{ mIndex, "Game", "elden ring ai max combo attacks",
