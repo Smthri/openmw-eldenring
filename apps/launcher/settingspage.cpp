@@ -274,6 +274,14 @@ bool Launcher::SettingsPage::loadSettings()
         eldenLightRollDistanceSpinBox->setValue(finiteValue(Settings::game().mEldenRingLightRollDistance, 4.33f));
         eldenMediumRollDistanceSpinBox->setValue(finiteValue(Settings::game().mEldenRingMediumRollDistance, 3.65f));
         eldenHeavyRollDistanceSpinBox->setValue(finiteValue(Settings::game().mEldenRingHeavyRollDistance, 3.31f));
+        eldenCombatEnemyPoiseGroupBox->setEnabled(Settings::game().mEldenRingCombat);
+        eldenCombatEnemyPoiseGroupBox->setChecked(Settings::game().mEldenRingEnemyPoise);
+        eldenEnemyPoiseMultiplierSpinBox->setValue(finiteValue(Settings::game().mEldenRingEnemyPoiseMultiplier, 1.f));
+        eldenEnemyPoiseRecoveryDelaySpinBox->setValue(
+            finiteValue(Settings::game().mEldenRingEnemyPoiseRecoveryDelay, 2.5f));
+        eldenCombatDodgeStaminaGroupBox->setEnabled(Settings::game().mEldenRingCombat);
+        eldenDodgeStaminaMultiplierSpinBox->setValue(
+            finiteValue(Settings::game().mEldenRingDodgeStaminaMultiplier, 1.f) * 100.0);
     }
 
     // Visuals
@@ -574,6 +582,10 @@ void Launcher::SettingsPage::saveSettings()
         Settings::game().mEldenRingLightRollDistance.set(eldenLightRollDistanceSpinBox->value());
         Settings::game().mEldenRingMediumRollDistance.set(eldenMediumRollDistanceSpinBox->value());
         Settings::game().mEldenRingHeavyRollDistance.set(eldenHeavyRollDistanceSpinBox->value());
+        Settings::game().mEldenRingEnemyPoise.set(eldenCombatEnemyPoiseGroupBox->isChecked());
+        Settings::game().mEldenRingEnemyPoiseMultiplier.set(eldenEnemyPoiseMultiplierSpinBox->value());
+        Settings::game().mEldenRingEnemyPoiseRecoveryDelay.set(eldenEnemyPoiseRecoveryDelaySpinBox->value());
+        Settings::game().mEldenRingDodgeStaminaMultiplier.set(eldenDodgeStaminaMultiplierSpinBox->value() / 100.0);
     }
 
     // Visuals

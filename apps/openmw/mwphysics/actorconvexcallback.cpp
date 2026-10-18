@@ -1,4 +1,5 @@
 #include "actorconvexcallback.hpp"
+#include "actor.hpp"
 #include "collisiontype.hpp"
 #include "contacttestwrapper.h"
 
@@ -38,6 +39,18 @@ namespace MWPhysics
         // it still helps a lot.
         if (convexResult.m_hitCollisionObject->getBroadphaseHandle()->m_collisionFilterGroup == CollisionType_Actor)
         {
+            // Ignore only the selected player/actor pair for locomotion. Keep
+            // broadphase masks intact so combat, projectiles and other actors
+            // still see the same collision body.
+            if (mMe->getBroadphaseHandle()->m_collisionFilterGroup == CollisionType_Actor)
+            {
+                const auto* actor = static_cast<const Actor*>(mMe->getUserPointer());
+                const auto* other = static_cast<const Actor*>(convexResult.m_hitCollisionObject->getUserPointer());
+                if (ignoresActorPair(actor->getCollisionId(), actor->getPassThroughPlayerId(),
+                        other->getCollisionId(), other->getPassThroughPlayerId()))
+                    return 1;
+            }
+
             ActorOverlapTester isOverlapping;
             // FIXME: This is absolutely terrible and bullet should feel terrible for not making contactPairTest
             // const-correct.

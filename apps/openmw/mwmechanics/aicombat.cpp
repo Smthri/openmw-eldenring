@@ -267,11 +267,23 @@ namespace MWMechanics
                 updateActorsMovement(actor, duration, storage);
             }
 
-            // Turning must not freeze reaction/path replanning timers or charge
-            // releases. Only starting a native attack waits for the turn.
-            if (!storage.updateEldenAttack(actor, target, characterController, isRangedCombat, duration)
-                && !storage.mRotateMove)
-                storage.updateAttack(actor, characterController, weapon, isRangedCombat, duration);
+            if (!storage.updateEldenAttack(actor, target, characterController, isRangedCombat, duration))
+            {
+                if (useEldenCombat(actor))
+                {
+                    // Native spells and ranged weapons also need to start
+                    // while tracking a moving target. Aim only gates a new
+                    // windup, never an ongoing charge/release or its cooldown.
+                    const auto& rotation = actor.getRefData().getPosition().rot;
+                    const bool facing = isRangedCombat
+                        ? EldenCombat::rangedAttackFacing(rotation[2], storage.mMovement.mRotation[2],
+                            rotation[0], storage.mMovement.mRotation[0])
+                        : EldenCombat::meleeAttackFacing(rotation[2], storage.mMovement.mRotation[2]);
+                    storage.updateAttack(actor, characterController, weapon, isRangedCombat, duration, facing);
+                }
+                else if (!storage.mRotateMove)
+                    storage.updateAttack(actor, characterController, weapon, isRangedCombat, duration);
+            }
         }
         else
         {
@@ -774,7 +786,7 @@ namespace MWMechanics
     {
         const auto world = MWBase::Environment::get().getWorld();
         if (!useEldenMelee(actor) || distantCombat || !mCurrentAction || !mCurrentAction->getSpell().empty()
-            || !mCurrentAction->isAttackingOrSpell() || world->isSwimming(actor) || world->isFlying(actor)
+            || !mCurrentAction->isAttackingOrSpell() || world->isSwimming(actor)
             || !world->isActorCollisionEnabled(actor))
         {
             stopEldenAttack(actor);
@@ -813,7 +825,16 @@ namespace MWMechanics
         const bool biped = actorClass.isBipedal(actor);
         const bool canGuard = biped && (config.mHasShield || input.mTwoHanded);
         const float distance = getDistanceToBounds(actor, target);
-        const bool inReach = mReadyToAttack && !mRotateMove && mLOS
+        const osg::Vec3f towardTarget = target.getRefData().getPosition().asVec3()
+            - actor.getRefData().getPosition().asVec3();
+        // Smooth turning may never reach its tiny completion tolerance when
+        // the target circles us. Start/continue swings within a forward cone,
+        // independently of yaw/pitch turn completion. Native contact still
+        // checks the actual facing, reach, height and obstacles at the hit.
+        const bool facing = towardTarget.x() == 0.f && towardTarget.y() == 0.f
+            ? true : EldenCombat::meleeAttackFacing(actor.getRefData().getPosition().rot[2],
+                std::atan2(towardTarget.x(), towardTarget.y()));
+        const bool inReach = mReadyToAttack && facing && mLOS
             && distance <= std::max(64.f, mAttackRange * 1.1f);
 
         mEldenActive = true;
@@ -882,6 +903,7 @@ namespace MWMechanics
         const bool canBlockNow = canGuard && stamina >= 0.35f
             && (idle || combat.frame() >= definition.mCancelGuard);
         const bool canDodgeNow = biped && stamina >= 0.18f && world->isOnGround(actor)
+            && !world->isFlying(actor)
             && (idle || combat.frame() >= std::max(definition.mDodgeInputFrom, definition.mCancelDodge));
 
         auto abandonChain = [&] {
@@ -1061,7 +1083,7 @@ namespace MWMechanics
     }
 
     void AiCombatStorage::updateAttack(const MWWorld::Ptr& actor, CharacterController& characterController,
-        const ESM::Weapon* weapon, bool distantCombat, float duration)
+        const ESM::Weapon* weapon, bool distantCombat, float duration, bool canStartAttack)
     {
         const MWWorld::Class& actorClass = actor.getClass();
         MWMechanics::CreatureStats& actorStats = actorClass.getCreatureStats(actor);
@@ -1074,7 +1096,7 @@ namespace MWMechanics
         }
         else if (mReadyToAttack && characterController.readyToStartAttack())
         {
-            if (mAttackCooldown <= 0)
+            if (mAttackCooldown <= 0 && canStartAttack)
             {
                 mAttack = true; // attack starts just now
 
@@ -1117,7 +1139,7 @@ namespace MWMechanics
                     mAttackCooldown = std::min(baseDelay + 0.01f * Misc::Rng::roll0to99(prng), baseDelay + 0.9f);
                 }
             }
-            else
+            else if (mAttackCooldown > 0)
                 mAttackCooldown -= duration;
         }
 

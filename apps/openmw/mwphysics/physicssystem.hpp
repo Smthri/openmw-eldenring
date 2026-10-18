@@ -22,6 +22,7 @@
 #include "../mwworld/ptr.hpp"
 
 #include "collisiontype.hpp"
+#include "actorpassthrough.hpp"
 #include "raycasting.hpp"
 
 namespace osg
@@ -87,6 +88,8 @@ namespace MWPhysics
         osg::Vec3f mInertia;
         EldenCombat::LandingMovement mLandingMovement;
         std::uint64_t mLandingMovementGeneration = 0;
+        ActorPassThrough mActorPassThrough;
+        std::uint64_t mActorPassThroughGeneration = 0;
         const btCollisionObject* mStandingOn;
         bool mIsOnGround;
         bool mIsOnSlope;
@@ -109,6 +112,7 @@ namespace MWPhysics
         const bool mSkipCollisionDetection;
         const bool mIsPlayer;
         const bool mPreserveLandingMomentum;
+        const bool mHasMovementIntent;
     };
 
     struct ProjectileFrameData
@@ -179,6 +183,9 @@ namespace MWPhysics
 
         Actor* getActor(const MWWorld::Ptr& ptr);
         const Actor* getActor(const MWWorld::ConstPtr& ptr) const;
+
+        bool isActorPassingThroughPlayer(const MWWorld::ConstPtr& ptr) const;
+        void setActorMovementIntent(const MWWorld::Ptr& ptr, bool moving);
 
         const Object* getObject(const MWWorld::ConstPtr& ptr) const;
 

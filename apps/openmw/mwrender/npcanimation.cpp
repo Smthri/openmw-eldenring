@@ -717,7 +717,9 @@ namespace MWRender
             else
                 mAimingFactor = std::max(0.f, mAimingFactor - timepassed * 0.5f);
 
-            float rotateFactor = 0.75f + 0.25f * mAimingFactor;
+            // Imported bow poses already include this aiming pitch. Keep the
+            // native first-person translation offset without pitching twice.
+            float rotateFactor = mEldenBowAnimation ? 0.f : 0.75f + 0.25f * mAimingFactor;
 
             mFirstPersonNeckController->setRotate(
                 osg::Quat(mPtr.getRefData().getPosition().rot[0] * rotateFactor, osg::Vec3f(-1, 0, 0)));

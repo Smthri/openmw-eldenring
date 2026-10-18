@@ -125,6 +125,62 @@ namespace EldenCombat
             return std::clamp(std::isfinite(value) ? value : fallback, 0.1f, 20.f);
         }
 
+        const NativeAttackTiming* nativeAttack(const Config& config)
+        {
+            if (!config.mNativeAttack)
+                return nullptr;
+            const auto& timing = *config.mNativeAttack;
+            if (timing.mAnimation.empty() || !std::isfinite(timing.mDuration) || timing.mDuration <= 0.f
+                || !std::isfinite(timing.mHitFrame) || timing.mHitFrame < 0.f || timing.mHitFrame > timing.mDuration)
+                return nullptr;
+            return &timing;
+        }
+
+        Action nativeAction(Action action, const Config& config)
+        {
+            if (nativeAttack(config))
+            {
+                if (action == Action::Heavy1Charge)
+                    return Action::Heavy1;
+                if (action == Action::Heavy2Charge)
+                    return Action::Heavy2;
+            }
+            return action;
+        }
+
+        void configureNativeAttack(ActionDef& definition, Action action, const Config& config)
+        {
+            const auto* timing = nativeAttack(config);
+            if (!timing || !Controller::isAttack(action))
+                return;
+            Hit hit = definition.mHitCount > 0 ? definition.mHits[0] : Hit{};
+            hit.mFrom = hit.mTo = timing->mHitFrame;
+            definition.mHits = {};
+            definition.mHits[0] = hit;
+            definition.mHitCount = 1;
+            definition.mAnimation.clear();
+            definition.mNativeAnimation = timing->mAnimation;
+            definition.mAnimationSpeed = 1.f;
+            definition.mDuration = timing->mDuration;
+            definition.mInputFrom = definition.mDodgeInputFrom = std::max(0.f, timing->mDuration - 8.f);
+            definition.mCancelLight = definition.mCancelHeavy = definition.mCancelLeft = timing->mDuration;
+            definition.mCancelDodge = definition.mCancelJump = definition.mCancelGuard
+                = definition.mCancelMove = timing->mDuration;
+            definition.mInvincibleFrom = definition.mInvincibleTo = 0.f;
+            definition.mChargeFrom = definition.mChargeTo = 0.f;
+            definition.mDistance = 0.f;
+            definition.mRootMotion.clear();
+            definition.mRootMotionSpeed = 1.f;
+            definition.mLanding.reset();
+            definition.mLandingShort.reset();
+        }
+
+        void configureDodgeCost(ActionDef& definition, Action action, const Config& config)
+        {
+            if (dodgeAction(action))
+                definition.mStartCost *= std::clamp(nonnegative(config.mDodgeStaminaMultiplier, 1.f), 0.f, 3.f);
+        }
+
         void configureRollDistance(ActionDef& definition, Action action, const Config& config)
         {
             if (!config.mWeightBasedRollDistance || (action != Action::Roll && action != Action::CrouchRoll))
@@ -180,12 +236,35 @@ namespace EldenCombat
     {
     }
 
+    float poiseFromStats(const PoiseStats& stats)
+    {
+        const float endurance = nonnegative(stats.mEndurance);
+        const float strength = nonnegative(stats.mStrength);
+        float poise = std::max(0.f, endurance - 40.f) * 0.12f
+            + std::max(0.f, strength - 40.f) * 0.06f;
+        if (stats.mCreature)
+        {
+            const float health = nonnegative(stats.mHealth);
+            // Some small creatures have unusually high Endurance. Their actual
+            // health keeps rats and similar weak enemies easy to interrupt.
+            poise *= std::min(1.f, health / 100.f);
+            poise += std::min(20.f, std::sqrt(std::max(0.f, health - 100.f)) * 0.5f);
+            poise += std::min(10.f, std::max(0.f, nonnegative(stats.mLevel) - 10.f) * 0.15f);
+        }
+        else
+            poise += std::min(20.f, nonnegative(stats.mArmorRating) * 0.2f);
+        return std::clamp(poise, 0.f, 45.f);
+    }
+
     void Controller::configure(const Config& config)
     {
         const float previousMaximumStance = mConfig.mMaximumStance;
+        const float previousMaximumPoise = mConfig.mMaximumPoise;
         mConfig = config;
         mConfig.mMaximumStamina = nonnegative(config.mMaximumStamina, 100.f);
         mConfig.mMaximumStance = std::max(1.f, nonnegative(config.mMaximumStance, 60.f));
+        mConfig.mMaximumPoise = nonnegative(config.mMaximumPoise);
+        mConfig.mPoiseRecoveryDelay = std::clamp(nonnegative(config.mPoiseRecoveryDelay, 2.5f), 0.25f, 10.f);
         mConfig.mStaminaRegen = nonnegative(config.mStaminaRegen, 45.f);
         mConfig.mGuardRegenMultiplier = nonnegative(config.mGuardRegenMultiplier, 0.5f);
         mConfig.mSprintDrain = nonnegative(config.mSprintDrain, 11.f);
@@ -194,10 +273,16 @@ namespace EldenCombat
         mConfig.mLightRollDistance = validatedRollDistance(config.mLightRollDistance, 4.33f);
         mConfig.mMediumRollDistance = validatedRollDistance(config.mMediumRollDistance, 3.65f);
         mConfig.mHeavyRollDistance = validatedRollDistance(config.mHeavyRollDistance, 3.31f);
+        mConfig.mDodgeStaminaMultiplier = std::clamp(nonnegative(config.mDodgeStaminaMultiplier, 1.f), 0.f, 3.f);
         mConfig.mPostHitProtectionSeconds = nonnegative(config.mPostHitProtectionSeconds);
         mStamina = std::clamp(mStamina, 0.f, mConfig.mMaximumStamina);
         mStance = std::clamp(mStance * mConfig.mMaximumStance / std::max(1.f, previousMaximumStance), 0.f,
             mConfig.mMaximumStance);
+        // The world adapter configures every frame and before contacts. Preserve
+        // the remaining fraction when equipment/stat modifiers change.
+        mPoise = previousMaximumPoise > 0.f
+            ? std::clamp(mPoise * mConfig.mMaximumPoise / previousMaximumPoise, 0.f, mConfig.mMaximumPoise)
+            : mConfig.mMaximumPoise;
         // An equipment change does not alter the definition of an action already underway.
     }
 
@@ -270,10 +355,13 @@ namespace EldenCombat
 
     ActionDef Controller::actionDefinition(Action action, const Config& config, bool twoHanded)
     {
+        action = nativeAction(action, config);
 #ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
         if (std::optional<ActionDef> imported = importedActionDefinition(action, config, twoHanded))
         {
             configureRollDistance(*imported, action, config);
+            configureDodgeCost(*imported, action, config);
+            configureNativeAttack(*imported, action, config);
             return std::move(*imported);
         }
 #endif
@@ -393,6 +481,7 @@ namespace EldenCombat
                 result.mHits[1].mTo += 4.f / speed;
                 result.mHitCount = 2;
             }
+            configureNativeAttack(result, action, config);
             return result;
         }
 
@@ -484,6 +573,7 @@ namespace EldenCombat
             }
         }
         configureRollDistance(result, action, config);
+        configureDodgeCost(result, action, config);
         return result;
     }
 
@@ -511,13 +601,13 @@ namespace EldenCombat
         if (input.mDodge.mPressed)
         {
             mDodgeHoldFrames = 0.f;
-            mDodgeArmed = true;
+            mDodgeArmed = !input.mFlying;
         }
         if (input.mDodge.mHeld)
             mDodgeHoldFrames += frames;
         if (input.mDodge.mReleased)
         {
-            if (mDodgeArmed && mDodgeHoldFrames < SprintHoldFrames && dodgeListening)
+            if (!input.mFlying && mDodgeArmed && mDodgeHoldFrames < SprintHoldFrames && dodgeListening)
                 buffer(Request::Dodge);
             mDodgeArmed = false;
             mDodgeHoldFrames = 0.f;
@@ -528,7 +618,7 @@ namespace EldenCombat
         if (!listening)
             return;
         // One slot, newest input wins, matching the Rust state machine.
-        if (input.mJump.mPressed)
+        if (input.mJump.mPressed && !input.mFlying)
             buffer(Request::Jump);
         if (input.mHeavy.mPressed)
             buffer(Request::Heavy);
@@ -542,6 +632,7 @@ namespace EldenCombat
 
     void Controller::start(Action action, const Input& input, Update* result)
     {
+        action = nativeAction(action, mConfig);
         const bool resumeGuard = mAction == Action::GuardHit && action == Action::Idle;
         if (action == Action::Jump && result)
             result->mJumpMovementMultiplier = mSprinting ? 1.504f : 1.f;
@@ -573,6 +664,17 @@ namespace EldenCombat
         }
         if (action == Action::GuardCounter)
             mGuardCounterFrames = 0.f;
+        if (!mDef.mNativeAnimation.empty() && mDef.mHits[0].mFrom == 0.f)
+        {
+            // Creatures without an explicit hit key strike on the native start
+            // key. Keep that event in this update, including a zero-length window.
+            if ((mPaidHits & 1u) == 0)
+            {
+                spend(mDef.mHits[0].mStaminaCost, result);
+                mPaidHits |= 1u;
+            }
+            collectHits(-1.f);
+        }
         if (result)
         {
             result->mActionChanged = true;
@@ -583,11 +685,11 @@ namespace EldenCombat
 
     Action Controller::nextLight() const
     {
-        if (!mGrounded || mAction == Action::Jump)
+        if (!mFlying && (!mGrounded || mAction == Action::Jump))
             return Action::JumpLight;
-        if (mAction == Action::Roll || mAction == Action::CrouchRoll)
+        if (!mFlying && (mAction == Action::Roll || mAction == Action::CrouchRoll))
             return selectAttack({ Action::RollAttack, Action::Light1 }, mConfig, mTwoHanded);
-        if (mAction == Action::Backstep)
+        if (!mFlying && mAction == Action::Backstep)
             return selectAttack({ Action::BackstepAttack, Action::Light1 }, mConfig, mTwoHanded);
         if (lightOpener(mAction))
             return selectAttack({ Action::Light2, Action::Light1 }, mConfig, mTwoHanded);
@@ -613,7 +715,7 @@ namespace EldenCombat
     {
         if (guardCounterReady())
             return selectAttack({ Action::GuardCounter, Action::Heavy1Charge }, mConfig, mTwoHanded);
-        if (!mGrounded || mAction == Action::Jump)
+        if (!mFlying && (!mGrounded || mAction == Action::Jump))
             return Action::JumpHeavy;
         if (mAction == Action::Heavy1 || mAction == Action::Heavy1Charge)
             return selectAttack({ Action::Heavy2Charge, Action::Heavy1Charge }, mConfig, mTwoHanded);
@@ -635,11 +737,11 @@ namespace EldenCombat
     {
         if (pairedWeaponsActive())
         {
-            if (!mGrounded || mAction == Action::Jump)
+            if (!mFlying && (!mGrounded || mAction == Action::Jump))
                 return Action::PairedJump;
-            if (mAction == Action::Roll || mAction == Action::CrouchRoll)
+            if (!mFlying && (mAction == Action::Roll || mAction == Action::CrouchRoll))
                 return selectAttack({ Action::PairedRoll, Action::PairedLight1 }, mConfig, mTwoHanded);
-            if (mAction == Action::Backstep)
+            if (!mFlying && mAction == Action::Backstep)
                 return selectAttack({ Action::PairedBackstep, Action::PairedLight1 }, mConfig, mTwoHanded);
             if (mAction >= Action::PairedLight1 && mAction < Action::PairedLight6)
             {
@@ -676,7 +778,7 @@ namespace EldenCombat
         {
             case Request::Dodge:
             {
-                if (!input.mGrounded)
+                if (!input.mGrounded || input.mFlying)
                     return;
                 const auto direction = request.mDodgeDirection.value_or(std::array{ input.mMoveX, input.mMoveY });
                 const float length = std::hypot(direction[0], direction[1]);
@@ -696,24 +798,25 @@ namespace EldenCombat
                 break;
             }
             case Request::Jump:
-                if (input.mGrounded)
+                if (input.mGrounded && !input.mFlying)
                     start(Action::Jump, input, &result);
                 break;
             case Request::Light:
-                startAttack(mAction == Action::Idle && input.mGrounded && mSprinting
+                startAttack(mAction == Action::Idle && input.mGrounded && !input.mFlying && mSprinting
                         ? selectAttack({ Action::RunLight, Action::Light1 }, mConfig, mTwoHanded)
-                        : (mAction == Action::Idle && input.mGrounded && input.mCrouching
+                        : (mAction == Action::Idle && input.mGrounded && !input.mFlying && input.mCrouching
                                 ? selectAttack({ Action::CrouchAttack, Action::RollAttack, Action::Light1 }, mConfig,
                                     mTwoHanded)
                                 : nextLight()));
                 break;
             case Request::Heavy:
-                startAttack(mAction == Action::Idle && input.mGrounded && mSprinting
+                startAttack(mAction == Action::Idle && input.mGrounded && !input.mFlying && mSprinting
                         ? selectAttack({ Action::RunHeavy, Action::Heavy1Charge }, mConfig, mTwoHanded)
                         : nextHeavy());
                 break;
             case Request::Left:
-                startAttack(mAction == Action::Idle && input.mGrounded && mSprinting && pairedWeaponsActive()
+                startAttack(mAction == Action::Idle && input.mGrounded && !input.mFlying && mSprinting
+                        && pairedWeaponsActive()
                         ? selectAttack({ Action::PairedRun, Action::PairedLight1 }, mConfig, mTwoHanded)
                         : nextLeft());
                 break;
@@ -751,7 +854,7 @@ namespace EldenCombat
         const bool leftHand = mTwoHandedLeft || hit.mLeftHand || leftAction(mAction)
             || (pairedAction(mAction) && hitIndex % 2 != 0);
         return { mAction, mSequence, hitIndex, mDef.mStrength, hit.mDamageMultiplier, hit.mStanceDamage,
-            hit.mGuardDamage, hit.mHitStop, mTwoHanded, leftHand, pairedAction(mAction) };
+            hit.mGuardDamage, hit.mHitStop, mTwoHanded, leftHand, pairedAction(mAction), mDef.mNativeAnimation };
     }
 
     Attack Controller::attack() const
@@ -774,7 +877,7 @@ namespace EldenCombat
         }
     }
 
-    void Controller::landAttack(Update& result)
+    void Controller::landAttack(Update& result, bool preserveCrossedHits)
     {
         float hitEnd = 0.f;
         for (std::size_t index = 0; index < mDef.mHitCount; ++index)
@@ -791,7 +894,8 @@ namespace EldenCombat
         // completed airborne swing must never deal its damage again on landing.
         mPaidHits = ~std::uint32_t{ 0 };
         mLandedHits = connected || finished ? ~std::uint32_t{ 0 } : 0;
-        mAvailableHitCount = 0;
+        if (!preserveCrossedHits)
+            mAvailableHitCount = 0;
         mJumpWasAirborne = false;
         result.mActionChanged = true;
     }
@@ -802,11 +906,23 @@ namespace EldenCombat
             return;
         const float frames = seconds * AnimationFps;
         mGrounded = input.mGrounded;
+        mFlying = input.mFlying;
+        if (mFlying)
+        {
+            mSprinting = false;
+            mSprintGroundGraceRemaining = 0.f;
+            mDodgeArmed = false;
+            if (mBuffer && (mBuffer->mRequest == Request::Jump || mBuffer->mRequest == Request::Dodge))
+                mBuffer.reset();
+        }
         if ((mAction == Action::Jump || mDef.mLanding) && !mGrounded)
             mJumpWasAirborne = true;
-        mSprintGroundGraceRemaining = input.mGrounded ? SprintGroundGraceSeconds
+        mSprintGroundGraceRemaining = input.mGrounded && !mFlying ? SprintGroundGraceSeconds
             : std::max(0.f, mSprintGroundGraceRemaining - seconds);
         readButtons(input, frames);
+        mPoiseRecoveryRemaining = std::max(0.f, mPoiseRecoveryRemaining - seconds);
+        if (mPoiseRecoveryRemaining <= 0.f)
+            mPoise = mConfig.mMaximumPoise;
         if (mHitStopSeconds > 0.f)
         {
             mHitStopSeconds = std::max(0.f, mHitStopSeconds - seconds);
@@ -824,9 +940,9 @@ namespace EldenCombat
         // jump clip finishes. Resume ground controls immediately, while
         // keeping jump attacks' recovery and pending launch pulses intact.
         // The airborne latch also retains a landing observed during hit-stop.
-        if (mAction == Action::Jump && mJumpWasAirborne && mGrounded)
+        if (mAction == Action::Jump && mJumpWasAirborne && mGrounded && !mFlying)
             start(Action::Idle, input, &result);
-        else if (mDef.mLanding && mJumpWasAirborne && mGrounded)
+        else if (mDef.mLanding && mJumpWasAirborne && mGrounded && !mFlying)
             landAttack(result);
 
         bool regenerate = false;
@@ -840,7 +956,7 @@ namespace EldenCombat
             {
                 const BufferedRequest request = *mBuffer;
                 mBuffer.reset();
-                if (mStamina > 0.f)
+                if (mStamina > 0.f || (request.mRequest == Request::Dodge && mConfig.mDodgeStaminaMultiplier == 0.f))
                 {
                     startRequest(request, input, result);
                     if (mAction != Action::Idle)
@@ -853,7 +969,7 @@ namespace EldenCombat
             // never start a sprint in the air or relax jump/attack grounding.
             const bool sprintGrounded = input.mGrounded || (mSprinting && mSprintGroundGraceRemaining > 0.f);
             mSprinting = (input.mSprint || (input.mDodge.mHeld && mDodgeHoldFrames >= SprintHoldFrames))
-                && moving && sprintGrounded && !mSprintSpent && mStamina > 0.f;
+                && moving && sprintGrounded && !mFlying && !mSprintSpent && mStamina > 0.f;
             if (mSprinting && input.mInCombat)
             {
                 spend(mConfig.mSprintDrain * seconds, &result);
@@ -863,10 +979,10 @@ namespace EldenCombat
                     mSprintSpent = true;
                 }
             }
-            mGuarding = input.mGuard.mHeld && !mSprinting && input.mGrounded
+            mGuarding = input.mGuard.mHeld && !mSprinting && (mGrounded || mFlying)
                 && (mConfig.mHasShield || input.mTwoHanded) && !leftButtonAttacks(input);
             mGuardFrames = mGuarding ? mGuardFrames + frames : 0.f;
-            regenerate = !mSprinting && input.mGrounded;
+            regenerate = !mSprinting && (mGrounded || mFlying);
         }
         else
         {
@@ -888,7 +1004,7 @@ namespace EldenCombat
                 }
             }
             collectHits(previousFrame);
-            if (!mDef.mRootMotion.empty() && mGrounded && mAction != Action::Jump)
+            if (!mDef.mRootMotion.empty() && mGrounded && !mFlying && mAction != Action::Jump)
             {
                 const auto before = rootMotionAt(mDef, previousFrame);
                 const auto after = rootMotionAt(mDef, mFrame);
@@ -912,23 +1028,29 @@ namespace EldenCombat
                     result.mDisplacementY += forward;
                 }
             }
-            else if (dodgeAction(mAction) && mGrounded)
+            else if (dodgeAction(mAction) && mGrounded && !mFlying)
             {
                 const float distance = mDef.mDistance * (motionFraction(mFrame, mDef) - motionFraction(previousFrame, mDef));
                 result.mDisplacementX += mDodgeX * distance;
                 result.mDisplacementY += mDodgeY * distance;
             }
+            // Levitation can start during an aerial swing. Finish its authored
+            // phase, then recover without waiting indefinitely for touchdown.
+            // Slow updates may cross the last hit and the end of the clip in
+            // one call; retain those hits for the adapter to consume afterward.
+            if (mFlying && mDef.mLanding && mFrame >= mDef.mDuration)
+                landAttack(result, true);
             // An imported aerial swing holds its pose until native physics
             // reports landing. Ground recovery and buffered cancels begin there.
             const bool airborneAttack = static_cast<bool>(mDef.mLanding);
             // Replacing Jump before physics consumes its launch pulse would
             // cancel that pulse and strand an aerial attack on the ground.
-            const bool waitingForTakeoff = mAction == Action::Jump && !mJumpWasAirborne;
+            const bool waitingForTakeoff = mAction == Action::Jump && !mJumpWasAirborne && !mFlying;
             if (!airborneAttack && !waitingForTakeoff && mBuffer && mFrame >= cancelFrame(mBuffer->mRequest))
             {
                 const BufferedRequest request = *mBuffer;
                 mBuffer.reset();
-                if (mStamina > 0.f)
+                if (mStamina > 0.f || (request.mRequest == Request::Dodge && mConfig.mDodgeStaminaMultiplier == 0.f))
                 {
                     const std::uint64_t previousSequence = mSequence;
                     startRequest(request, input, result);
@@ -936,7 +1058,7 @@ namespace EldenCombat
                         return;
                 }
             }
-            regenerate = !airborneAttack && mFrame >= mDef.mCancelMove && input.mGrounded;
+            regenerate = !airborneAttack && mFrame >= mDef.mCancelMove && (mGrounded || mFlying);
             if (!airborneAttack
                 && ((input.mGuard.mHeld && !leftButtonAttacks(input) && mFrame >= mDef.mCancelGuard)
                     || (std::hypot(input.mMoveX, input.mMoveY) >= StickDeadzone && mFrame >= mDef.mCancelMove)
@@ -1057,19 +1179,37 @@ namespace EldenCombat
 
         protectAfterHit(hit.mDamage);
         mSinceHitSeconds = 0.f;
-        mBuffer.reset();
-        mAvailableHitCount = 0;
         if (mConfig.mAllowStanceBreak && !hit.mCritical)
         {
             mStance -= nonnegative(hit.mStanceDamage);
             if (mStance <= 0.f)
             {
                 mStance = mConfig.mMaximumStance;
+                mPoise = mConfig.mMaximumPoise;
+                mPoiseRecoveryRemaining = mConfig.mPoiseRecoveryDelay;
                 mCriticalSeconds = 1.6f;
+                mBuffer.reset();
+                mAvailableHitCount = 0;
                 start(Action::StanceBreak, input);
                 return HitResult::StanceBroken;
             }
         }
+        if (mConfig.mMaximumPoise > 0.f)
+        {
+            const bool damaging = nonnegative(hit.mDamage) > 0.f;
+            const float impact = damaging ? nonnegative(hit.mStanceDamage) : 0.f;
+            if (damaging)
+                mPoiseRecoveryRemaining = mConfig.mPoiseRecoveryDelay;
+            mPoise = std::max(0.f, mPoise - impact);
+            if (!hit.mCritical && hit.mLevel != HurtLevel::Knockdown && mPoise > 0.f)
+                // Damage and stance loss still apply. Preserve the attack's
+                // frame, queued follow-up and crossed hit windows so an enemy
+                // can finish its swing through a weak hit.
+                return HitResult::Hit;
+            mPoise = mConfig.mMaximumPoise;
+        }
+        mBuffer.reset();
+        mAvailableHitCount = 0;
         // Like the source simulation, aerial hits do not force a ground reaction.
         if (mGrounded)
         {
@@ -1156,6 +1296,8 @@ namespace EldenCombat
             mHitStopSeconds = 0.f;
             mPostHitProtectionRemaining = 0.f;
             mCriticalSeconds = 0.f;
+            mPoise = 0.f;
+            mPoiseRecoveryRemaining = 0.f;
         }
         else if (mAction == Action::Dead)
             reset();

@@ -228,10 +228,16 @@ to GitHub Releases. The same restriction applies to local Linux packages.**
 
 ## Enable music and use the controls
 
-The generated profile enables combat. Music is a separate option and starts
-disabled: enable **Settings > Gameplay > Elden Ring regional and boss music**
-in the launcher, or add `elden ring music = true` under `[Game]` in the
+New profiles inherit the fork's display, graphics and gameplay defaults:
+2560×1440 fullscreen, 2× interface scaling, difficulty −90, smooth animation
+transitions and movement, and turning toward movement. Distant terrain,
+shadows, enhanced lighting and water are enabled. Rebuilding preserves
+existing settings and controls; customize them in the launcher or the
 package's `elden-profile/settings.cfg`.
+
+Combat and Elden Ring music are enabled by default. Music remains a separate
+option under **Settings > Gameplay > Elden Ring regional and boss music**;
+missing imported tracks fall back to Morrowind's music.
 
 | Action | Default keyboard / mouse |
 | --- | --- |

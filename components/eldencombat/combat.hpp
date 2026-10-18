@@ -42,6 +42,9 @@ namespace EldenCombat
         bool mSprint = false;
         bool mInCombat = false;
         bool mGrounded = true;
+        // Controlled levitation is distinct from jumping/falling. Keep native
+        // ground contact truthful; flight permits melee but no ground movement.
+        bool mFlying = false;
         bool mCrouching = false;
         bool mLockedOn = false;
         bool mTwoHanded = false;
@@ -143,6 +146,29 @@ namespace EldenCombat
         Dead,
     };
 
+    // Native actor statistics, separate from stance-break/critical vulnerability.
+    // Health is the modified maximum, not current health; injury does not remove poise.
+    struct PoiseStats
+    {
+        float mEndurance = 0.f;
+        float mStrength = 0.f;
+        float mArmorRating = 0.f;
+        float mHealth = 0.f;
+        float mLevel = 0.f;
+        bool mCreature = false;
+    };
+
+    float poiseFromStats(const PoiseStats& stats);
+
+    // Native creature text-key timing, in 30-fps frames relative to the clip's
+    // start. The engine selects the group and owns its visual playback.
+    struct NativeAttackTiming
+    {
+        std::string mAnimation;
+        float mDuration = 0.f;
+        float mHitFrame = 0.f;
+    };
+
     struct Config
     {
         Load mLoad = Load::Medium;
@@ -154,6 +180,10 @@ namespace EldenCombat
         bool mAllowStanceBreak = true;
         float mMaximumStamina = 100.f;
         float mMaximumStance = 60.f;
+        // Zero preserves the original every-hit stagger. The engine enables
+        // stat-based poise for enemies; absorbing a reaction never absorbs damage.
+        float mMaximumPoise = 0.f;
+        float mPoiseRecoveryDelay = 2.5f;
         // Estimates from the upstream simulation, in the normalized 100-point stamina scale.
         float mStaminaRegen = 45.f;
         float mGuardRegenMultiplier = 0.5f;
@@ -166,8 +196,10 @@ namespace EldenCombat
         float mLightRollDistance = 4.33f;
         float mMediumRollDistance = 3.65f;
         float mHeavyRollDistance = 3.31f;
+        float mDodgeStaminaMultiplier = 1.f;
         // Opt-in physical-hit protection; the world adapter enables this for the player only.
         float mPostHitProtectionSeconds = 0.f;
+        std::optional<NativeAttackTiming> mNativeAttack;
     };
 
     struct Hit
@@ -186,6 +218,9 @@ namespace EldenCombat
     {
         // Canonical baked ERAN clip name. Empty when using estimated timings.
         std::string mAnimation;
+        // Captured native group when its own text keys own attack timing.
+        // Empty for ordinary imported/fallback poses.
+        std::string mNativeAnimation;
         // Convert this action's clock back to the original clip's 30-fps frames.
         // Imported weapon timings are divided by the actor's weapon speed.
         float mAnimationSpeed = 1.f;
@@ -235,6 +270,9 @@ namespace EldenCombat
         bool mTwoHanded = false;
         bool mLeftHand = false;
         bool mPaired = false;
+        // Preserve the native attack type when a slow update also starts the
+        // next group before the world consumes this contact.
+        std::string mNativeAnimation;
     };
 
     enum class HurtLevel
@@ -308,6 +346,7 @@ namespace EldenCombat
         float stamina() const { return mStamina; }
         float maximumStamina() const { return mConfig.mMaximumStamina; }
         float stance() const { return mStance; }
+        float poise() const { return mPoise; }
 
         Update update(const Input& input, float seconds);
         HitResult receiveHit(const Incoming& hit);
@@ -379,7 +418,7 @@ namespace EldenCombat
         void spend(float normalizedCost, Update* result = nullptr);
         Attack makeAttack(std::size_t hitIndex) const;
         void collectHits(float previousFrame);
-        void landAttack(Update& result);
+        void landAttack(Update& result, bool preserveCrossedHits = false);
 
         Config mConfig;
         ActionDef mDef;
@@ -387,6 +426,8 @@ namespace EldenCombat
         float mFrame = 0.f;
         float mStamina = 100.f;
         float mStance = 60.f;
+        float mPoise = 0.f;
+        float mPoiseRecoveryRemaining = 0.f;
         float mGuardFrames = 0.f;
         float mGuardCounterFrames = 0.f;
         float mDodgeHoldFrames = 0.f;
@@ -406,6 +447,7 @@ namespace EldenCombat
         bool mTwoHanded = false;
         bool mTwoHandedLeft = false;
         bool mGrounded = true;
+        bool mFlying = false;
         // A jump or jump attack may remain grounded while its accepted physics
         // pulse waits for a fixed step. Land it only after observing flight.
         bool mJumpWasAirborne = false;

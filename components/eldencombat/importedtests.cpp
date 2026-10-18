@@ -1,7 +1,12 @@
 #include "combat.hpp"
+#include "flighttests.hpp"
+#include "poisetests.hpp"
+#include "dodgecosttests.hpp"
+#include "nativeattacktests.hpp"
 #include "animations.hpp"
 #include "imported_timings.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <memory>
@@ -44,6 +49,46 @@ namespace
         const auto endpoint = Controller::rootMotionAt(definition, definition.mDuration);
         for (const float coordinate : endpoint)
             check(std::isfinite(coordinate), "non-finite sampled root motion");
+    }
+
+    void locomotion(const AnimationBank& bank, WeaponClass weapon, bool twoHanded)
+    {
+        const std::string stance = stanceAnimation(weapon, twoHanded, 0);
+        const auto hand = bank.jointOffset("R_Hand");
+        const auto chest = bank.jointOffset("Spine2");
+        check(hand && chest, "gait bank lacks the weapon hand or torso");
+        for (unsigned id : { 20000u, 20001u, 20002u, 20003u, 20100u, 20101u, 20102u, 20103u,
+                 20200u, 22100u, 22101u, 22102u, 22103u })
+        {
+            const std::string name = stanceAnimation(weapon, twoHanded, id);
+            const auto* clip = bank.find(name);
+            check(clip != nullptr, "bank is missing an authored weapon gait");
+            check(!locomotionNeedsCarry(stance, name, twoHanded),
+                "weapon's own gait is overridden by its idle arm");
+            // The source's base walk/run/sprint animates the weapon hand
+            // relative to the torso, even with the camera and torso stationary.
+            // The old a000 idle overlay erased this movement for native swords.
+            if (stance == "a000_000000" && id < 22100)
+            {
+                std::vector<float> pose;
+                std::array<float, 3> first{};
+                float displacement = 0.f;
+                for (std::size_t frame = 0; frame + 1 < clip->mFrames; ++frame)
+                {
+                    bank.sample(*clip, static_cast<float>(frame), true, pose);
+                    float squared = 0.f;
+                    for (std::size_t axis = 0; axis < first.size(); ++axis)
+                    {
+                        const float position = pose[*hand + axis] - pose[*chest + axis];
+                        if (frame == 0)
+                            first[axis] = position;
+                        squared += (position - first[axis]) * (position - first[axis]);
+                    }
+                    displacement = std::max(displacement, squared);
+                }
+                check(displacement > 0.05f * 0.05f, "authored gait's weapon hand no longer moves with the stride");
+            }
+        }
     }
 
     void lightAttack(const Config& config, bool twoHanded, const ActionDef& imported)
@@ -172,6 +217,10 @@ int main(int argc, char** argv)
 {
     try
     {
+        EldenCombat::Tests::controlledFlight();
+        EldenCombat::Tests::enemyPoise();
+        EldenCombat::Tests::configurableDodgeCost();
+        EldenCombat::Tests::nativeCreatureAttacks();
         std::unique_ptr<EldenCombat::AnimationBank> animations;
         if (argc > 1)
         {
@@ -187,10 +236,13 @@ int main(int argc, char** argv)
             for (const bool twoHanded : { false, true })
             {
                 if (animations)
+                {
                     for (unsigned int id : { 0u, 100u })
                         check(animations->find(EldenCombat::stanceAnimation(
                             static_cast<EldenCombat::WeaponClass>(weapon), twoHanded, id)) != nullptr,
                             "baked bank is missing an imported weapon stance");
+                    locomotion(*animations, static_cast<EldenCombat::WeaponClass>(weapon), twoHanded);
+                }
                 for (const float speed : { 0.75f, 1.f, 1.3f })
                 {
                     EldenCombat::Config config;

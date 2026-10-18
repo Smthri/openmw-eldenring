@@ -47,6 +47,13 @@ namespace Settings
             makeClampSanitizerFloat(0, 1) };
         SettingValue<float> mEldenRingAiReactionTime{ mIndex, "Game", "elden ring ai reaction time",
             makeClampSanitizerFloat(0.1f, 2.f) };
+        SettingValue<bool> mEldenRingEnemyPoise{ mIndex, "Game", "elden ring enemy poise" };
+        SettingValue<float> mEldenRingEnemyPoiseMultiplier{ mIndex, "Game", "elden ring enemy poise multiplier",
+            makeClampSanitizerFloat(0.f, 3.f) };
+        SettingValue<float> mEldenRingEnemyPoiseRecoveryDelay{ mIndex, "Game", "elden ring enemy poise recovery delay",
+            makeClampSanitizerFloat(0.25f, 10.f) };
+        SettingValue<float> mEldenRingDodgeStaminaMultiplier{ mIndex, "Game", "elden ring dodge stamina multiplier",
+            makeClampSanitizerFloat(0.f, 3.f) };
         SettingValue<int> mDifficulty{ mIndex, "Game", "difficulty", makeClampSanitizerInt(-500, 500) };
         // We have to cap it since using high values (larger than 7168) will make some quests harder or impossible to
         // complete (bug #1876)

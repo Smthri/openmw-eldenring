@@ -1378,6 +1378,11 @@ namespace MWWorld
         return placed;
     }
 
+    void World::setActorMovementIntent(const MWWorld::Ptr& ptr, bool hasIntent)
+    {
+        mPhysics->setActorMovementIntent(ptr, hasIntent);
+    }
+
     void World::queueMovement(const Ptr& ptr, const osg::Vec3f& velocity)
     {
         mPhysics->queueObjectMovement(ptr, velocity);
@@ -1549,6 +1554,11 @@ namespace MWWorld
     {
         MWPhysics::Actor* physicActor = mPhysics->getActor(ptr);
         return physicActor && physicActor->getCollisionMode();
+    }
+
+    bool World::isActorPassingThroughPlayer(const MWWorld::ConstPtr& ptr) const
+    {
+        return mPhysics->isActorPassingThroughPlayer(ptr);
     }
 
     bool World::toggleCollisionMode()

@@ -358,6 +358,101 @@ namespace MWRender
             }
         };
 
+        struct ShieldCallback : SceneUtil::NodeCallback<ShieldCallback, NifOsg::MatrixTransform*>
+        {
+            std::weak_ptr<Impl> mState;
+            bool mBeforeNative = false;
+
+            ShieldCallback() = default;
+            ShieldCallback(const ShieldCallback& copy, const osg::CopyOp& op)
+                : SceneUtil::NodeCallback<ShieldCallback, NifOsg::MatrixTransform*>(copy, op)
+                , mState(copy.mState)
+                , mBeforeNative(copy.mBeforeNative)
+            {
+            }
+            META_Object(MWRender, ShieldCallback)
+
+            void operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* visitor)
+            {
+                if (const auto state = mState.lock())
+                {
+                    if (mBeforeNative)
+                        state->restoreShield();
+                    else if (state->mEnabled && (state->mAlignShield || state->mHaveShownShield))
+                    {
+                        osg::Vec3f translation, scale;
+                        osg::Quat parent, scaleOrientation;
+                        osg::computeLocalToWorld(state->mShieldParents).decompose(
+                            translation, parent, scale, scaleOrientation);
+                        const osg::Quat facing(state->mFacing.shown(), osg::Vec3f(0, 0, 1));
+                        state->mNativeShieldRotation = node->mRotationScale.toOsgMatrix().getRotate();
+                        if (!state->mHaveShieldBlendFrom)
+                        {
+                            state->mShieldBlendFrom = state->mNativeShieldRotation * parent * facing.inverse();
+                            state->mHaveShieldBlendFrom = true;
+                        }
+                        if (!state->mAlignShield && state->mShieldBlend >= 1.f)
+                        {
+                            // The arm has finished returning to its new pose.
+                            // The before-native callback has already removed
+                            // our previous override; leave the attachment alone.
+                            state->mHaveShownShield = false;
+                            state->mHaveShieldBlendFrom = false;
+                        }
+                        else
+                        {
+                            // Release the guard correction on the same timeline
+                            // as the arm. Restoring the native local attachment
+                            // immediately would flip it on the still-raised wrist.
+                            const osg::Quat target = state->mAlignShield ? state->mShieldTargetRotation
+                                : state->mNativeShieldRotation * parent * facing.inverse();
+                            state->mShownShieldRotation.slerp(
+                                state->mShieldBlend, state->mShieldBlendFrom, target);
+                            state->mShownShieldRotation *= facing;
+                            // Shield Bone retains its native wrist offset and
+                            // scale, but the shield face follows the authored
+                            // equipment frame instead of inferred finger twist.
+                            node->setRotation(state->mShownShieldRotation * parent.inverse());
+                            state->mShieldOverridden = true;
+                            state->mHaveShownShield = true;
+                        }
+                    }
+                }
+                traverse(node, visitor);
+            }
+        };
+
+        struct BowCallback : SceneUtil::NodeCallback<BowCallback, NifOsg::MatrixTransform*>
+        {
+            std::weak_ptr<Impl> mState;
+            bool mBeforeNative = false;
+
+            BowCallback() = default;
+            BowCallback(const BowCallback& copy, const osg::CopyOp& op)
+                : SceneUtil::NodeCallback<BowCallback, NifOsg::MatrixTransform*>(copy, op)
+                , mState(copy.mState)
+                , mBeforeNative(copy.mBeforeNative)
+            {
+            }
+            META_Object(MWRender, BowCallback)
+
+            void operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* visitor)
+            {
+                if (const auto state = mState.lock())
+                {
+                    if (mBeforeNative)
+                        state->restoreBow();
+                    else if (state->mEnabled && state->mBow)
+                    {
+                        state->mNativeBowRotation = nodeRotation(*node);
+                        state->mNativeBowTranslation = node->getMatrix().getTrans();
+                        state->applyBow();
+                    }
+                }
+                traverse(node, visitor);
+            }
+        };
+
         std::shared_ptr<const EldenCombat::AnimationBank> mBank;
         std::vector<Bone> mBones;
         std::array<std::size_t, JointCount> mOffsets{};
@@ -398,6 +493,332 @@ namespace MWRender
         bool mHaveShownWeapon = false;
         bool mHaveWeaponBlendFrom = false;
 
+        osg::ref_ptr<NifOsg::MatrixTransform> mShieldNode;
+        osg::NodePath mShieldParents;
+        std::optional<std::size_t> mShieldAxes;
+        osg::Quat mNativeShieldRotation;
+        osg::Quat mShieldTargetRotation;
+        osg::Quat mShownShieldRotation;
+        osg::Quat mShieldBlendFrom;
+        float mShieldBlend = 1.f;
+        bool mAlignShield = false;
+        bool mShieldOverridden = false;
+        bool mHaveShownShield = false;
+        bool mHaveShieldBlendFrom = false;
+
+        struct BowArrowRestore : SceneUtil::NodeCallback<BowArrowRestore, osg::MatrixTransform*>
+        {
+            std::weak_ptr<Impl> mState;
+            BowArrowRestore() = default;
+            BowArrowRestore(const BowArrowRestore& copy, const osg::CopyOp& op)
+                : SceneUtil::NodeCallback<BowArrowRestore, osg::MatrixTransform*>(copy, op)
+                , mState(copy.mState)
+            {
+            }
+            META_Object(MWRender, BowArrowRestore)
+            void operator()(osg::MatrixTransform* node, osg::NodeVisitor* visitor)
+            {
+                if (const auto state = mState.lock())
+                    state->restoreBowArrow();
+                traverse(node, visitor);
+            }
+        };
+
+        struct BowFinishCallback : SceneUtil::NodeCallback<BowFinishCallback, osg::Group*>
+        {
+            std::weak_ptr<Impl> mState;
+
+            BowFinishCallback() = default;
+            BowFinishCallback(const BowFinishCallback& copy, const osg::CopyOp& op)
+                : SceneUtil::NodeCallback<BowFinishCallback, osg::Group*>(copy, op)
+                , mState(copy.mState)
+            {
+            }
+            META_Object(MWRender, BowFinishCallback)
+
+            void operator()(osg::Group* node, osg::NodeVisitor* visitor)
+            {
+                traverse(node, visitor);
+                if (const auto state = mState.lock(); state && state->mEnabled && state->mBow)
+                    state->closeBowGrip(*node);
+            }
+        };
+
+        struct BowHandCallback : SceneUtil::NodeCallback<BowHandCallback, osg::MatrixTransform*>
+        {
+            std::weak_ptr<Impl> mState;
+
+            BowHandCallback() = default;
+            BowHandCallback(const BowHandCallback& copy, const osg::CopyOp& op)
+                : SceneUtil::NodeCallback<BowHandCallback, osg::MatrixTransform*>(copy, op)
+                , mState(copy.mState)
+            {
+            }
+            META_Object(MWRender, BowHandCallback)
+
+            void operator()(osg::MatrixTransform* node, osg::NodeVisitor* visitor)
+            {
+                // A replacement rig may visit either arm first. If the bow's
+                // right-hand attachment already ran, update it again after the
+                // left palm receives this frame's pose. No bone/skin changes.
+                if (const auto state = mState.lock(); state && state->mEnabled && state->mBowOverridden)
+                    state->applyBow();
+                traverse(node, visitor);
+            }
+        };
+
+        osg::ref_ptr<NifOsg::MatrixTransform> mBowNode;
+        osg::NodePath mBowParents;
+        osg::NodePath mBowHandPath;
+        osg::Vec3f mBowPalm;
+        osg::Quat mNativeBowRotation;
+        osg::Vec3f mNativeBowTranslation;
+        osg::Quat mBowTargetRotation;
+        osg::Quat mShownBowRotation;
+        osg::Vec3f mShownBowPosition;
+        osg::Quat mBowFromRotation;
+        osg::Vec3f mBowFromPosition;
+        float mBowBlend = 1.f;
+        bool mBow = false;
+        float mBowDraw = 0.f;
+        std::array<std::size_t, 3> mBowArm{ sNoParent, sNoParent, sNoParent };
+        osg::Vec3f mBowDrawPalm;
+        osg::ref_ptr<osg::MatrixTransform> mSkeletonArrow;
+        osg::ref_ptr<osg::MatrixTransform> mBowArrow;
+        osg::ref_ptr<BowArrowRestore> mBowArrowRestore;
+        osg::Quat mNativeBowArrowRotation;
+        osg::Vec3f mNativeBowArrowTranslation;
+        std::vector<osg::observer_ptr<osg::Node>> mArrowGeometry;
+        std::optional<osg::Vec3f> mArrowTail;
+
+        std::optional<osg::Vec3f> arrowTail(osg::MatrixTransform& node)
+        {
+            bool changed = mArrowGeometry.size() != node.getNumChildren();
+            for (unsigned int i = 0; !changed && i < node.getNumChildren(); ++i)
+                changed = mArrowGeometry[i].get() != node.getChild(i);
+            if (!changed)
+                return mArrowTail;
+            GripGeometryVisitor geometry;
+            mArrowGeometry.clear();
+            for (unsigned int i = 0; i < node.getNumChildren(); ++i)
+            {
+                mArrowGeometry.emplace_back(node.getChild(i));
+                node.getChild(i)->accept(geometry);
+            }
+            mArrowTail.reset();
+            if (geometry.mTriangles.empty())
+                return mArrowTail;
+            // Native projectile meshes point along +Y; their origin is often
+            // near the tip. Find the rear shaft in the actual equipped mesh.
+            float rear = std::numeric_limits<float>::max();
+            for (const auto& triangle : geometry.mTriangles)
+                for (const auto& vertex : triangle)
+                    rear = std::min(rear, vertex.y());
+            osg::Vec3f low(std::numeric_limits<float>::max(), rear, std::numeric_limits<float>::max());
+            osg::Vec3f high(-low.x(), rear, -low.z());
+            for (const auto& triangle : geometry.mTriangles)
+                for (const auto& vertex : triangle)
+                    if (vertex.y() <= rear + 1e-3f)
+                        for (int axis : { 0, 2 })
+                        {
+                            low[axis] = std::min(low[axis], vertex[axis]);
+                            high[axis] = std::max(high[axis], vertex[axis]);
+                        }
+            mArrowTail = (low + high) * .5f;
+            return mArrowTail;
+        }
+
+        bool mBowArrowOverridden = false;
+        std::weak_ptr<Impl> mSelf;
+
+        void restoreBowArrow()
+        {
+            if (mBowArrowOverridden)
+            {
+                if (auto* nif = dynamic_cast<NifOsg::MatrixTransform*>(mBowArrow.get()))
+                {
+                    nif->setRotation(mNativeBowArrowRotation);
+                    nif->setTranslation(mNativeBowArrowTranslation);
+                }
+                mBowArrowOverridden = false;
+            }
+        }
+
+        void detachBowArrow()
+        {
+            restoreBowArrow();
+            if (mBowArrow && mBowArrowRestore)
+                mBowArrow->removeUpdateCallback(mBowArrowRestore);
+            mBowArrow = nullptr;
+            mBowArrowRestore = nullptr;
+        }
+
+        void alignBowArrow(osg::MatrixTransform& nock, const osg::Vec3f& tail)
+        {
+            auto* nif = dynamic_cast<NifOsg::MatrixTransform*>(&nock);
+            if (!nif || mBowParents.empty())
+                return;
+            if (mBowArrow != &nock)
+            {
+                detachBowArrow();
+                mBowArrow = &nock;
+                mBowArrowRestore = new BowArrowRestore;
+                mBowArrowRestore->mState = mSelf;
+                mBowArrowRestore->setNestedCallback(nock.getUpdateCallback());
+                nock.setUpdateCallback(mBowArrowRestore);
+            }
+            const auto paths = nock.getParentalNodePaths(mBowParents.front());
+            if (paths.empty())
+                return;
+            auto parents = paths.front();
+            parents.pop_back();
+            osg::Vec3f translation, scale;
+            osg::Quat parentRotation, scaleOrientation;
+            osg::computeLocalToWorld(parents).decompose(translation, parentRotation, scale, scaleOrientation);
+            mNativeBowArrowRotation = nodeRotation(nock);
+            mNativeBowArrowTranslation = nock.getMatrix().getTrans();
+            const osg::Vec3f nativeTail = tail * nock.getMatrix();
+            const osg::Quat modelRotation = mNativeBowArrowRotation * parentRotation;
+            osg::Quat correction;
+            correction.makeRotate(modelRotation * osg::Vec3f(0, 1, 0),
+                mShownBowRotation * osg::Vec3f(1, 0, 0));
+            osg::Quat blended;
+            blended.slerp(mBowDraw * mBowBlend, osg::Quat(), correction);
+            // Rotate around the physical nock, not the model origin near the
+            // arrow tip. This keeps the tail on the native animated string.
+            nif->setRotation(modelRotation * blended * parentRotation.inverse());
+            nif->setTranslation(nativeTail - osg::Matrixf::transform3x3(tail, nif->getMatrix()));
+            mBowArrowOverridden = true;
+        }
+
+        bool mBowOverridden = false;
+        bool mHaveBowFrom = false;
+
+        void closeBowGrip(osg::Group& commonRoot)
+        {
+            if (mBowDraw <= 0.f
+                || std::find(mBowArm.begin(), mBowArm.end(), sNoParent) != mBowArm.end())
+                return;
+            const auto [upper, forearm, hand] = mBowArm;
+            if (mBones[forearm].mParent != upper || mBones[hand].mParent != forearm)
+                return;
+            class FindNock : public osg::NodeVisitor
+            {
+            public:
+                osg::MatrixTransform* mNock = nullptr;
+                bool mSkin = false;
+                FindNock() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
+                void apply(osg::Node& node) override
+                {
+                    // NPC body parts are attached beside the skeleton root.
+                    // A custom rig with skin inside the arm subtree may have
+                    // cached its bones already: keep its authored hand pose.
+                    mSkin |= std::string_view(node.className()) == "RigGeometry";
+                    if (node.getName() == "ArrowBone" || node.getName() == "arrowbone")
+                        mNock = dynamic_cast<osg::MatrixTransform*>(&node);
+                    traverse(node);
+                }
+            } visitor;
+            commonRoot.accept(visitor);
+            osg::MatrixTransform* nock = mSkeletonArrow ? mSkeletonArrow.get() : visitor.mNock;
+            if (!nock || visitor.mSkin || nock->getNumChildren() == 0)
+                return;
+            const auto nockPaths = nock->getParentalNodePaths(&commonRoot);
+            if (nockPaths.empty())
+                return;
+            const auto model = [&](std::size_t index) {
+                const auto path = mBones[index].mNode->getParentalNodePaths(&commonRoot).front();
+                return osg::Matrixf(osg::computeLocalToWorld(path));
+            };
+            // Solve entirely in the common ancestor's frame. Both arms and the
+            // native bow nock have just updated, independent of sibling order.
+            const osg::Matrixf upperModel = model(upper);
+            const osg::Matrixf forearmModel = model(forearm);
+            const osg::Matrixf handModel = model(hand);
+            const auto tail = arrowTail(*nock);
+            if (!tail)
+                return;
+            const osg::Vec3f target = *tail * osg::computeLocalToWorld(nockPaths.front())
+                - osg::Matrixf::transform3x3(mBowDrawPalm, handModel);
+            const osg::Vec3f root = upperModel.getTrans();
+            const osg::Vec3f elbow = forearmModel.getTrans();
+            const osg::Vec3f wrist = handModel.getTrans();
+            const auto solved = EldenPose::solveTwoBone(
+                root, elbow, wrist, wrist + (target - wrist) * mBowDraw * mBowBlend);
+            osg::Quat upperTurn, forearmTurn;
+            upperTurn.makeRotate(elbow - root, solved.mJoint - root);
+            forearmTurn.makeRotate(wrist - elbow, solved.mEnd - solved.mJoint);
+            const auto rotation = [](const osg::Matrixf& value) {
+                osg::Vec3f translation, scale;
+                osg::Quat result, scaleOrientation;
+                value.decompose(translation, result, scale, scaleOrientation);
+                return result;
+            };
+            const osg::Quat upperRotation = rotation(upperModel) * upperTurn;
+            const osg::Quat forearmRotation = rotation(forearmModel) * forearmTurn;
+            const osg::Quat parentRotation = mBones[upper].mParent == sNoParent
+                ? osg::Quat() : rotation(model(mBones[upper].mParent));
+            static_cast<NifOsg::MatrixTransform*>(mBones[upper].mNode.get())
+                ->setRotation(upperRotation * parentRotation.inverse());
+            static_cast<NifOsg::MatrixTransform*>(mBones[forearm].mNode.get())
+                ->setRotation(forearmRotation * upperRotation.inverse());
+            static_cast<NifOsg::MatrixTransform*>(mBones[hand].mNode.get())
+                ->setRotation(rotation(handModel) * forearmRotation.inverse());
+            for (std::size_t index : mBowArm)
+            {
+                auto& bone = mBones[index];
+                bone.mShown.mRotation = nodeRotation(*bone.mNode);
+                osg::Quat parent;
+                for (std::size_t i = bone.mParent; i != sNoParent; i = mBones[i].mParent)
+                    parent *= nodeRotation(*mBones[i].mNode);
+                bone.mShownModelRotation = bone.mShown.mRotation * parent;
+            }
+            // The stock bow's parent is that same right hand. Restore its
+            // left-palm position after the right arm moves towards the string.
+            applyBow();
+            alignBowArrow(*nock, *tail);
+        }
+
+        void applyBow()
+        {
+            // Stock skeletons attach bows to the right Weapon Bone.
+            // Move that attachment onto the displayed left palm;
+            // do not reparent the mesh or replace its string tracks.
+            const osg::Matrixf parent = osg::computeLocalToWorld(mBowParents);
+            const osg::Matrixf hand = osg::computeLocalToWorld(mBowHandPath);
+            osg::Vec3f translation, scale;
+            osg::Quat parentRotation, scaleOrientation;
+            parent.decompose(translation, parentRotation, scale, scaleOrientation);
+            const osg::Quat facing(mFacing.shown(), osg::Vec3f(0, 0, 1));
+            if (!mHaveBowFrom)
+            {
+                mBowFromRotation = mNativeBowRotation * parentRotation * facing.inverse();
+                mBowFromPosition = (mNativeBowTranslation * parent) - hand.getTrans();
+                mHaveBowFrom = true;
+            }
+            mShownBowRotation.slerp(
+                mBowBlend, mBowFromRotation, mBowTargetRotation);
+            mShownBowRotation *= facing;
+            const osg::Vec3f palm = mBowPalm * hand;
+            const osg::Vec3f position = hand.getTrans()
+                + mBowFromPosition * (1.f - mBowBlend)
+                + (palm - hand.getTrans()) * mBowBlend;
+            mBowNode->setRotation(mShownBowRotation * parentRotation.inverse());
+            mBowNode->setTranslation(position * osg::Matrixf::inverse(parent));
+            mShownBowPosition = position - hand.getTrans();
+            mBowOverridden = true;
+        }
+
+        void restoreBow()
+        {
+            if (mBowOverridden)
+            {
+                mBowNode->setRotation(mNativeBowRotation);
+                mBowNode->setTranslation(mNativeBowTranslation);
+                mBowOverridden = false;
+            }
+        }
+
         std::array<std::size_t, 4> mSwordArm{ sNoParent, sNoParent, sNoParent, sNoParent };
         osg::Vec3f mBindRight;
         float mSwordGripDistance = 0.f;
@@ -416,7 +837,7 @@ namespace MWRender
                 || mWeaponParents.empty() || mWeaponParents.back() != mBones[rightHand].mNode.get())
                 return;
 
-            // Native ready attachments are constant. Read the last completed
+            // Native ready and locomotion attachments are constant. Read the last completed
             // native update, then solve before this frame's bone callbacks and
             // skinning cache run. The normal pose fade covers entry transitions.
             const osg::Matrixf attachment = mWeaponNode->getMatrix();
@@ -479,6 +900,15 @@ namespace MWRender
             {
                 mWeaponNode->setRotation(mNativeWeaponRotation);
                 mWeaponOverridden = false;
+            }
+        }
+
+        void restoreShield()
+        {
+            if (mShieldOverridden)
+            {
+                mShieldNode->setRotation(mNativeShieldRotation);
+                mShieldOverridden = false;
             }
         }
 
@@ -550,9 +980,17 @@ namespace MWRender
         void restore()
         {
             restoreWeapon();
+            restoreShield();
+            restoreBow();
+            detachBowArrow();
+            mBow = false;
+            mHaveBowFrom = false;
             mAlignSpear = false;
             mHaveShownWeapon = false;
             mHaveWeaponBlendFrom = false;
+            mAlignShield = false;
+            mHaveShownShield = false;
+            mHaveShieldBlendFrom = false;
             mFacing.reset();
             if (!mEnabled)
                 return;
@@ -588,6 +1026,7 @@ namespace MWRender
         : mImpl(std::make_shared<Impl>())
     {
         auto& state = *mImpl;
+        state.mSelf = mImpl;
         state.mBank = std::move(bank);
         if (!state.mBank)
             return;
@@ -860,6 +1299,10 @@ namespace MWRender
             for (std::size_t j = 0; j < arm.size(); ++j)
                 if (state.mBones[i].mJoint == arm[j])
                     state.mSwordArm[j] = i;
+            constexpr std::array bowArm{ RUpperArm, RForearm, RHand };
+            for (std::size_t j = 0; j < bowArm.size(); ++j)
+                if (state.mBones[i].mJoint == bowArm[j])
+                    state.mBowArm[j] = i;
         }
         if (const auto* ready = state.mBank->find("a012_000000"); ready
             && state.mHaveBindJoint[RFinger1] && state.mHaveBindJoint[RFinger2]
@@ -914,6 +1357,101 @@ namespace MWRender
                     state.mWeaponNode = nullptr;
             }
         }
+
+        state.mShieldAxes = state.mBank->axesOffset("L_Weapon");
+        if (const auto found = nodes.find("shield bone"); found != nodes.end() && state.mShieldAxes)
+        {
+            state.mShieldNode = dynamic_cast<NifOsg::MatrixTransform*>(found->second.get());
+            if (state.mShieldNode)
+            {
+                const auto paths = state.mShieldNode->getParentalNodePaths(&objectRoot);
+                if (!paths.empty())
+                {
+                    state.mShieldParents = paths.front();
+                    state.mShieldParents.pop_back();
+                    std::erase(state.mShieldParents, &objectRoot);
+                    for (bool before : { true, false })
+                    {
+                        osg::ref_ptr<Impl::ShieldCallback> callback = new Impl::ShieldCallback;
+                        callback->mState = mImpl;
+                        callback->mBeforeNative = before;
+                        auto& controllers = before ? mBeforeNativeControllers : mControllers;
+                        controllers.emplace_back(state.mShieldNode, callback);
+                    }
+                }
+                else
+                    state.mShieldNode = nullptr;
+            }
+        }
+        // Prefer the optional left attachment, matching native weapon lookup.
+        // Original Morrowind skeletons use the right attachment for bows too.
+        const auto left = nodes.find("bip01 l hand");
+        const auto attachment = nodes.contains("weapon bone left")
+            ? nodes.find("weapon bone left") : nodes.find("weapon bone");
+        if (left != nodes.end() && attachment != nodes.end() && state.mShieldAxes)
+        {
+            state.mBowNode = dynamic_cast<NifOsg::MatrixTransform*>(attachment->second.get());
+            const auto handPaths = left->second->getParentalNodePaths(&objectRoot);
+            const auto bowPaths = attachment->second->getParentalNodePaths(&objectRoot);
+            if (state.mBowNode && !handPaths.empty() && !bowPaths.empty())
+            {
+                state.mBowHandPath = handPaths.front();
+                state.mBowParents = bowPaths.front();
+                state.mBowParents.pop_back();
+                std::erase(state.mBowHandPath, &objectRoot);
+                std::erase(state.mBowParents, &objectRoot);
+                if (attachment->first == "weapon bone left")
+                    state.mBowPalm = state.mBowNode->getMatrix().getTrans();
+                else if (state.mSwordArm[2] != sNoParent && state.mSwordArm[3] != sNoParent)
+                {
+                    const auto& leftHand = state.mBones[state.mSwordArm[2]];
+                    const auto& rightHand = state.mBones[state.mSwordArm[3]];
+                    osg::Vec3f grip = osg::Matrixf::transform3x3(
+                        state.mBowNode->getMatrix().getTrans(), rightHand.mRestModel);
+                    grip -= state.mBindRight * (2.f * (grip * state.mBindRight));
+                    state.mBowPalm = osg::Matrixf::transform3x3(grip, osg::Matrixf::inverse(leftHand.mRestModel));
+                }
+                if (state.mSwordArm[3] != sNoParent)
+                {
+                    state.mBowDrawPalm = state.mWeaponNode
+                        ? osg::Vec3f(state.mWeaponNode->getMatrix().getTrans()) : osg::Vec3f();
+                    const auto rightPaths = state.mBones[state.mSwordArm[3]].mNode->getParentalNodePaths(&objectRoot);
+                    if (!rightPaths.empty())
+                    {
+                        const auto& rightPath = rightPaths.front();
+                        osg::Node* common = nullptr;
+                        for (std::size_t i = 0; i < std::min(rightPath.size(), handPaths.front().size()); ++i)
+                        {
+                            if (rightPath[i] != handPaths.front()[i])
+                                break;
+                            if (rightPath[i] != &objectRoot)
+                                common = rightPath[i];
+                        }
+                        if (common && common->asGroup())
+                        {
+                            osg::ref_ptr<Impl::BowFinishCallback> callback = new Impl::BowFinishCallback;
+                            callback->mState = mImpl;
+                            mControllers.emplace_back(common, callback);
+                        }
+                    }
+                    if (const auto arrow = nodes.find("bip01 arrow"); arrow != nodes.end())
+                        state.mSkeletonArrow = arrow->second;
+                }
+                osg::ref_ptr<Impl::BowHandCallback> handCallback = new Impl::BowHandCallback;
+                handCallback->mState = mImpl;
+                mControllers.emplace_back(left->second, handCallback);
+                for (bool before : { true, false })
+                {
+                    osg::ref_ptr<Impl::BowCallback> callback = new Impl::BowCallback;
+                    callback->mState = mImpl;
+                    callback->mBeforeNative = before;
+                    auto& controllers = before ? mBeforeNativeControllers : mControllers;
+                    controllers.emplace_back(state.mBowNode, callback);
+                }
+            }
+            else
+                state.mBowNode = nullptr;
+        }
     }
 
     EldenAnimation::~EldenAnimation()
@@ -928,10 +1466,11 @@ namespace MWRender
 
     bool EldenAnimation::play(std::string_view clipName, float frame, bool loop, float duration, float yaw,
         std::string_view leftArmClip, std::string_view rightArmClip, std::string_view gripClip, bool alignSpear,
-        bool twoHandedSword, bool upperBodyOnly)
+        bool twoHandedSword, bool upperBodyOnly, bool bow, float pitch, float bowDraw)
     {
         auto& state = *mImpl;
-        if (!state.mValid || !std::isfinite(frame) || !std::isfinite(yaw))
+        if (!state.mValid || !std::isfinite(frame) || !std::isfinite(yaw) || !std::isfinite(pitch)
+            || (bow && !state.mBowNode))
         {
             clear();
             return false;
@@ -949,6 +1488,11 @@ namespace MWRender
         state.overlay(rightArmClip, false);
         state.grip(gripClip, alignSpear);
         const bool spear = alignSpear && state.mWeaponNode && state.mWeaponAxes;
+        // Shield guards supply these arm layers. Other two-handed weapons
+        // have their own guard layers; their attachments stay native.
+        const bool shield = ((leftArmClip == "a000_000100" && rightArmClip != leftArmClip)
+                                || leftArmClip == "a015_000100")
+            && state.mBank->find(leftArmClip) && state.mShieldNode && state.mShieldAxes;
         // Buffered rolls and other repeated actions can restart the same clip.
         // Blend from the displayed pose when its action clock resets, while
         // ordinary gait loop seams and a frozen action retain their blend.
@@ -956,7 +1500,7 @@ namespace MWRender
         const bool clipChanged = state.mClip != clipName || restarted;
         const bool changed = clipChanged || state.mLeftArmClip != leftArmClip
             || state.mRightArmClip != rightArmClip || state.mGripClip != gripClip || state.mAlignSpear != spear
-            || state.mUpperBodyOnly != upperBodyOnly;
+            || state.mAlignShield != shield || state.mUpperBodyOnly != upperBodyOnly || state.mBow != bow;
         state.mFrame = frame;
         state.mLoop = loop;
         if (!spear)
@@ -965,7 +1509,17 @@ namespace MWRender
             state.mHaveShownWeapon = false;
             state.mHaveWeaponBlendFrom = false;
         }
+        if (!bow)
+        {
+            state.restoreBow();
+            state.detachBowArrow();
+            state.mHaveBowFrom = false;
+        }
+        const bool bowReleased = state.mBow && state.mBowDraw > 0.f && bowDraw <= 0.f;
+        state.mBow = bow;
+        state.mBowDraw = std::isfinite(bowDraw) ? std::clamp(bowDraw, 0.f, 1.f) : 0.f;
         state.mAlignSpear = spear;
+        state.mAlignShield = shield;
         if (changed)
         {
             // Clip/layer changes already crossfade from the displayed pose.
@@ -974,15 +1528,25 @@ namespace MWRender
                 plane.reset();
             state.mFacing.start(yaw);
             const osg::Quat inverseFacing = osg::Quat(state.mFacing.from(), osg::Vec3f(0, 0, 1)).inverse();
+            if (state.mHaveBowFrom)
+            {
+                state.mBowFromRotation = state.mShownBowRotation * inverseFacing;
+                state.mBowFromPosition = state.mShownBowPosition;
+            }
             state.mHaveWeaponBlendFrom = state.mHaveShownWeapon;
             if (state.mHaveShownWeapon)
                 state.mWeaponBlendFrom = state.mShownWeaponRotation * inverseFacing;
+            state.mHaveShieldBlendFrom = state.mHaveShownShield;
+            if (state.mHaveShownShield)
+                state.mShieldBlendFrom = state.mShownShieldRotation * inverseFacing;
             state.mClip = clipName;
             state.mLeftArmClip = leftArmClip;
             state.mRightArmClip = rightArmClip;
             state.mGripClip = gripClip;
             state.mFade = 0.f;
             state.mFadeLength = clipChanged ? clip->mBlendFrames / 30.f : 0.12f;
+            if (bowReleased)
+                state.mFadeLength = std::max(state.mFadeLength, .1f);
             for (Impl::Bone& bone : state.mBones)
             {
                 if (state.mEnabled && (!state.mUpperBodyOnly || upperBodyJoint(bone.mJoint)))
@@ -1009,6 +1573,25 @@ namespace MWRender
             state.mWeaponBlend = blend;
             state.mWeaponTargetRotation = frameRotation(fromSource(state.mSample, *state.mWeaponAxes),
                 fromSource(state.mSample, *state.mWeaponAxes + 3));
+        }
+        if (shield || state.mHaveShownShield)
+            state.mShieldBlend = blend;
+        if (shield)
+        {
+            // Native shields lie in local XY, with +Y towards the top and
+            // +Z out of the face. The source shield uses +X up and -Z out;
+            // rebuild the third axis to account for ERAN's reflected basis.
+            state.mShieldTargetRotation = frameRotation(-fromSource(state.mSample, *state.mShieldAxes + 3),
+                fromSource(state.mSample, *state.mShieldAxes));
+        }
+        const osg::Quat aim(bow ? pitch : 0.f, osg::Vec3f(-1, 0, 0));
+        if (bow)
+        {
+            state.mBowBlend = blend;
+            // Native bows extend along +Y, with arrows flying towards +X.
+            // The imported left-weapon frame uses +X forward and -Y up.
+            state.mBowTargetRotation = frameRotation(fromSource(state.mSample, *state.mShieldAxes),
+                -fromSource(state.mSample, *state.mShieldAxes + 3)) * aim;
         }
         JointPositions positions;
         for (std::size_t j = 0; j != JointCount; ++j)
@@ -1052,7 +1635,8 @@ namespace MWRender
             if (bone.mJoint != sNoJoint)
             {
                 const osg::Quat modelRotation
-                    = bone.mCorrection * jointFrame(bone.mJoint, positions, body, headUp, headForward, &limbPlanes);
+                    = bone.mCorrection * jointFrame(bone.mJoint, positions, body, headUp, headForward, &limbPlanes)
+                    * (upperBodyJoint(bone.mJoint) ? aim : osg::Quat());
                 osg::Quat shownModelRotation;
                 shownModelRotation.slerp(blend, bone.mFromModelRotation, modelRotation);
                 // A reversal has two equally short heading arcs. Choose that
@@ -1083,8 +1667,17 @@ namespace MWRender
             }
             state.mModelMatrices[i] = local * parentMatrix;
         }
-        if (twoHandedSword && loop && clipName == "a012_000000" && gripClip == clipName
-            && leftArmClip.empty() && rightArmClip.empty())
+        // The support hand must stay on the native handle throughout the
+        // two-handed carry, including the sprint's lowered weapon. Attacks,
+        // crouching, guard layers and other moves retain their authored poses.
+        constexpr std::array swordCarryClips{
+            "a012_000000", "a012_020000", "a012_020001", "a012_020002", "a012_020003",
+            "a012_020100", "a012_020101", "a012_020102", "a012_020103", "a012_020200",
+            "a012_022100", "a012_022101", "a012_022102", "a012_022103",
+        };
+        if (twoHandedSword && loop && gripClip == "a012_000000" && !alignSpear && !upperBodyOnly
+            && leftArmClip.empty() && rightArmClip.empty()
+            && std::find(swordCarryClips.begin(), swordCarryClips.end(), clipName) != swordCarryClips.end())
             state.closeSwordGrip(blend);
         state.mEnabled = true;
         state.mUpperBodyOnly = upperBodyOnly;

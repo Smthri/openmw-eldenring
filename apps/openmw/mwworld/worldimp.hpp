@@ -396,6 +396,8 @@ namespace MWWorld
 
         float getMaxActivationDistance() const override;
 
+        void setActorMovementIntent(const Ptr& ptr, bool hasIntent) override;
+
         void queueMovement(const Ptr& ptr, const osg::Vec3f& velocity) override;
         ///< Queues movement for \a ptr (in local space), to be applied in the next call to
         /// doPhysics.
@@ -410,6 +412,7 @@ namespace MWWorld
 
         void setActorCollisionMode(const Ptr& ptr, bool internal, bool external) override;
         bool isActorCollisionEnabled(const Ptr& ptr) override;
+        bool isActorPassingThroughPlayer(const ConstPtr& ptr) const override;
 
         bool toggleCollisionMode() override;
         ///< Toggle collision mode for player. If disabled player object should ignore

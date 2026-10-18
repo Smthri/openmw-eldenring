@@ -58,7 +58,17 @@ namespace MWMechanics
 
     bool useEldenCombat(const MWWorld::Ptr& actor)
     {
-        return Settings::game().mEldenRingCombat && !actor.isEmpty() && actor.getClass().isActor();
+        if (!Settings::game().mEldenRingCombat || actor.isEmpty() || !actor.getClass().isActor())
+            return false;
+
+        // Almalexia's pre-duel speech uses her ordinary native idle, including
+        // its authored pacing. It is not a scripted PlayGroup animation. Keep
+        // both the native pose and its root movement until combat actually starts.
+        const auto& id = actor.getCellRef().getRefId();
+        if (id == "almalexia" || id == "almalexia_warrior")
+            return actor.getClass().getCreatureStats(actor).getAiSequence().isInCombat();
+
+        return true;
     }
 
     bool useEldenMelee(const MWWorld::Ptr& actor)
@@ -152,7 +162,7 @@ namespace MWMechanics
     {
         EldenCombat::Config config;
         // Six animation frames stop simultaneous crowd contacts from restarting
-        // the player's reaction; NPCs retain their existing hit behavior.
+        // the player's reaction. Enemy poise below never suppresses damage.
         if (actor == getPlayer())
             config.mPostHitProtectionSeconds = 6.f / EldenCombat::AnimationFps;
         const auto& cls = actor.getClass();
@@ -204,6 +214,21 @@ namespace MWMechanics
         }
         const float load = equipmentWeight / std::max(1.f, cls.getCapacity(actor));
         const auto& settings = Settings::game();
+        config.mDodgeStaminaMultiplier = settings.mEldenRingDodgeStaminaMultiplier;
+        if (settings.mEldenRingEnemyPoise && actor != getPlayer())
+        {
+            const auto& stats = cls.getCreatureStats(actor);
+            EldenCombat::PoiseStats poise;
+            poise.mEndurance = stats.getAttribute(ESM::Attribute::Endurance).getModified();
+            poise.mStrength = stats.getAttribute(ESM::Attribute::Strength).getModified();
+            poise.mCreature = !cls.isNpc();
+            poise.mHealth = stats.getHealth().getModified();
+            poise.mLevel = static_cast<float>(stats.getLevel());
+            if (!poise.mCreature)
+                poise.mArmorRating = cls.getArmorRating(actor);
+            config.mMaximumPoise = EldenCombat::poiseFromStats(poise) * settings.mEldenRingEnemyPoiseMultiplier;
+            config.mPoiseRecoveryDelay = settings.mEldenRingEnemyPoiseRecoveryDelay;
+        }
         config.mWeightBasedRollDistance = settings.mEldenRingWeightBasedRollDistance;
         config.mLoad = config.mWeightBasedRollDistance
             ? EldenCombat::Controller::loadFromRatio(load,

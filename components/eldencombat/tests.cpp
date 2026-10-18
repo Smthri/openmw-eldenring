@@ -1,4 +1,8 @@
 #include "combat.hpp"
+#include "flighttests.hpp"
+#include "poisetests.hpp"
+#include "dodgecosttests.hpp"
+#include "nativeattacktests.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -902,6 +906,10 @@ int main()
 {
     try
     {
+        EldenCombat::Tests::controlledFlight();
+        EldenCombat::Tests::enemyPoise();
+        EldenCombat::Tests::configurableDodgeCost();
+        EldenCombat::Tests::nativeCreatureAttacks();
         dodgeAndStamina();
         sprinting();
         sprintTerrainContact();

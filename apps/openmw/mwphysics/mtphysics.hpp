@@ -47,6 +47,7 @@ namespace MWPhysics
             unsigned int frameNumber, osg::Stats& stats);
 
         void resetSimulation(const ActorMap& actors);
+        void syncActorPassThrough(Actor& player, const ActorFrameData& frameData);
 
         // Thread safe wrappers
         void rayTest(const btVector3& rayFromWorld, const btVector3& rayToWorld,
@@ -90,6 +91,7 @@ namespace MWPhysics
         std::unique_ptr<WorldFrameData> mWorldFrameData;
         std::vector<Simulation>* mSimulations = nullptr;
         std::unordered_set<const btCollisionObject*> mCollisionObjects;
+        std::unordered_set<const btCollisionObject*> mPassThroughActors;
         float mDefaultPhysicsDt;
         float mPhysicsDt;
         float mTimeAccum;

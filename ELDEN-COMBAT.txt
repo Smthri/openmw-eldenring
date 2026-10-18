@@ -27,6 +27,39 @@ melee, guard, dodge, reaction and death poses, plus supported casting and
 throwing gestures. Nonhumanoid, incomplete and unsupported skeletons retain
 their native animations; missing clips also fall back to native poses.
 
+Creatures without an imported pose adapter also retain native animation-driven
+locomotion during wandering and pursuit. Native creature running uses the walk
+clip to scale animation speed, then takes actual travel from the running clip.
+Using only the nominal movement speed discards that authored run/walk ratio
+and slows these creatures down. Native swimming/flying displacement and Elden
+attack movement locks and hit-stop remain in effect. For native non-bipedal
+creatures, missing sideways/backward gaits fall back to an available forward
+gait while root movement follows the requested travel direction. This prevents
+pauses on path corners and during smoothed turns without changing the route.
+
+Non-bipedal creatures without imported pose support, including the Imperfect,
+use their selected native attack group's start/hit/stop keys for melee timing.
+The group is selected before the controller advances and plays at native speed.
+One impact occurs at its hit key (at start when that key is absent), and the
+entire native recovery finishes before another swing or movement cancellation.
+Heavy input starts a single native swing without an imported charge/release
+restart. Native playback and damage share the controller clock, including
+hit-stop and slow updates. Damage ranges, collision, poise, stamina and finite
+AI chains remain integrated; native hit callbacks stay suppressed to avoid
+duplicate damage. No creature-specific timing values are hardcoded.
+
+Almalexia (almalexia and almalexia_warrior) keeps native animations and
+animation-driven movement outside combat. Tribunal selects her pre-duel
+pacing and gestures through native AI idle groups, not scripted PlayGroup
+commands; imported idle poses must not cover them or discard their movement.
+Her AI combat sequence enables the Elden controller and imported poses for
+the duel, and leaving combat restores native playback. Quest dialogue,
+voice timing and the transition to hostility remain controlled by Tribunal.
+Both Tribunal records omit the Bipedal creature flag despite having complete
+humanoid skeletons. They are explicitly admitted to the renderer's full-body
+capability check; incomplete rigs still fall back to native animation. This
+does not change their native creature flags or other non-bipedal creatures.
+
 With Turn to movement direction enabled, unlocked third-person walking,
 running and crouching use forward Elden clips facing the smoothed direction
 of travel. Lock-on and the disabled setting retain directional walk/run
@@ -40,8 +73,8 @@ travel direction; attacks, guarding, lock-on and native aiming retain their
 existing facing. Teleports, death, first person and native/scripted poses reset
 the remembered idle heading.
 
-Active Elden movement uses the same ground speed forwards, backwards, sideways
-and diagonally at the same stick strength. Native strafing and leg-turn penalties
+Actors with imported Elden locomotion use the same ground speed forwards,
+backwards, sideways and diagonally at the same stick strength. Native strafing and leg-turn penalties
 are bypassed, and native locomotion root motion cannot replace this velocity.
 Directional clips retain their own stride rates, adjusted to actual travel.
 Directional walk/run/crouch selection now retains its current clip through small
@@ -98,34 +131,67 @@ their existing playback timing.
 
 Seal / incantation spell animations
 
-With Elden combat enabled, stationary grounded third-person humanoid casts use
-three imported seal gestures, selected by the first spell effect's native range:
+With Elden combat enabled, learned spells, scrolls and cast-on-use equipment
+all use imported casting gestures. This overrides the native instant-item
+animation preference while Elden combat is active; disabling Elden combat
+restores that preference. Constant-effect and on-strike enchantments retain
+their native behavior.
 
-  Self       Urgent Heal    a433_045000 -> a433_045010
-  Touch      Catch Flame    a506_045000 -> a506_045010
-  Target     Flame Sling   a417_045000 -> a417_045011 (uncharged)
+The first effect still selects the native self/touch/target release keys. Among
+effects using that range, the highest native effect cost selects the gesture
+(ties retain the first effect). The choice is captured when the cast begins:
 
-Both the wind-up and release phases are imported. Their timeline is fitted to
-the native spellcast start/release/stop text keys so the release gesture matches
-OpenMW's actual spell event. Magicka, success/failure, effects, spell selection
-and recovery remain controlled by OpenMW. These are range-based casting poses;
-they do not add a seal item, Elden Ring spell effects or new spell mechanics.
+  Restore/cure        Urgent Heal       a433_045000 -> a433_045010
+  Area restore/cure   Heal              a434_045000 -> a434_045011
+  Protection/fortify  Protection       a431_045000 -> a431_045010
+  Summon/illusion,    Shadow Bait /     a426_045000 -> a426_045010
+    mysticism, frost,   Darkness
+    other curses
+  Fire contact/burst  Catch Flame       a506_045000 -> a506_045010
+  Fire projectile     Flame Sling      a417_045000 -> a417_045011 (uncharged)
+  Shock projectile    Lightning Spear   a436_045000 -> a436_045011 (uncharged)
 
-Player, NPC and compatible humanoid creature casts use the same mapping.
-First-person, moving, crouched, airborne, swimming and unsupported creature/rig
-poses keep their existing animation behavior. Scripted animation overrides also
-retain control. Missing clips or invalid spell text keys fall back to native
-casting. The full-body
-source gestures are currently used only while standing still to avoid
-overriding walking legs.
-Enchanted items use them only when native magic-item casting animations are on.
+Close-range shock uses Catch Flame's short forward thrust. Spectral gestures
+are a neutral visual approximation for frost, summons and non-elemental magic;
+these poses do not add Elden Ring effects, seals, staves or new spell mechanics.
+Unknown effect metadata retains the generic native-range mapping.
+
+Both preparation and release/recovery phases are imported. Their timeline is
+fitted to native spellcast start/release/stop text keys. Source release frames
+are 30 (Urgent Heal), 20 (Heal), 15 (protection), 18 (spectral), 5 (Catch Flame),
+18 (Flame Sling) and 15 (Lightning Spear). OpenMW still performs the actual
+release, charge/scroll consumption, magicka, success/failure, effects and recovery.
+Changing/removing the selected enchanted item before release cancels that cast
+without consuming the replacement item; identity is captured by native RefNum.
+
+Player, NPC and compatible humanoid creature casts share this mapping.
+Stationary grounded third-person casts use the full body. Moving, crouched,
+airborne and first-person casts use only the upper body so native legs and
+movement continue. Swimming, flight, scripted overrides and unsupported rigs
+retain native behavior; missing clips or invalid text keys fall back to native
+casting. First-person appearance and custom rigs still need in-game validation.
 
 Rebuild the engine and install the expanded player_anims.bin together. The
 existing CI/eldenring-update-windows.ps1 command below copies both. The installer
-rejects older banks missing any of the six incantation phases or the dart throw.
-For regeneration, the selective unpacker now also includes
-chr/c0000_a9x.anibnd.dcx; see
+rejects older banks missing any of the 14 incantation phases or the dart throw.
+The selective unpacker includes chr/c0000_a9x.anibnd.dcx; see
 CI/eldenring-assets.txt. No installed game files are modified by extraction.
+
+Shield guard attachment
+
+Imported shield guards now align Shield Bone to the authored L_Weapon equipment
+axes instead of inheriting the retargeted forearm's downward tilt. Native shield
++Y is its top and +Z its outward face; these follow source +X and -Z respectively.
+The correction blends during guard changes, preserves attachment position/scale,
+and restores the native rotation before native controllers. On guard release,
+the displayed shield orientation blends into the native attachment for the
+entire arm transition, including interrupted releases and turning; it no longer
+snaps while the wrist is still raised. Disabling imported playback restores the
+native attachment immediately. It applies to shield guard layers, including movement and two-handed shield
+guarding, without changing ordinary weapon-guard attachments. Missing axes or
+attachment bones retain the native fallback. CI/eldenring-test-spear.cpp contains
+synthetic and actual-bank callback regressions; visual verification requires the
+rebuilt game and representative native/modded shields.
 
 Dart throwing animations
 
@@ -142,15 +208,60 @@ crouched, airborne and first-person throws apply the imported upper body while
 preserving native lower-body movement and camera positioning. Players, NPCs
 and compatible humanoid creatures share the gesture. Unsupported rigs, missing
 clips and invalid shoot text keys keep native throwing animations. Swimming,
-flight and scripted animations retain their existing behavior. Bows and
-crossbows keep their native animations. Rebuild the engine and install the
+scripted animations retain their existing behavior. Levitation supports the
+upper-body throw. Crossbows keep their native animations; bows use the mapping
+below. Rebuild the engine and install the
 expanded player_anims.bin together; older banks without a000_050170 are rejected
 by the animation installer and Windows copy/build helpers.
+
+Bow and arrow animations
+
+With Elden combat enabled, native bows use the Elden Ring longbow draw,
+held aim and release/recovery sequence. The draw is a044_036010 (frames
+0-30), the held aim is a044_036020 (frames 0-60), and the release/recovery
+is a044_036000 (frames 0-50). The source release event occurs at frame 0
+of that separate release clip. The imported draw endpoint, held aim and
+release start share the same nocked pose. The a014 stance supplies bow
+carry and directional movement poses.
+
+The imported phases follow the selected native bow's shoot text keys.
+Holding attack keeps the drawn pose; releasing early still uses native
+attack strength. OpenMW owns arrow attachment, arrow release and consumption,
+projectile aiming/speed, fatigue, damage, enchantments and recovery. The
+newer upstream's continuous release/follow section and the original tree's
+split sections have separate dispatch, so pre-release frames are not mistaken
+for recovery. The same continuous-section correction also applies to darts.
+
+Stationary grounded third-person shots use the full-body gesture. Moving,
+crouched, airborne, levitating and first-person shots use the imported upper
+body over native movement. Players and NPC archers share the mapping.
+Missing clips, invalid native text keys, unsupported rigs, swimming and
+scripted animation overrides retain native poses. Crossbows retain their
+native animations. Equip the usual Morrowind bow and arrows; the controls
+and ammunition requirements are unchanged.
+
+Bow attachment follows the imported left-hand equipment frame, including
+stock rigs that mount the bow under the right Weapon Bone. Imported upper-body
+pitch follows native aiming. First person applies its native aiming factor once
+and preserves the camera/neck offset, avoiding a second neck pitch after the
+imported pose. Native bow deformation and string tracks continue
+to run. The native +Y arrow axis and geometry-derived tail keep visible aim
+and the drawing hand aligned with the animated string;
+release blends back to the authored recoil. Corrections restore native
+attachment transforms when imported playback ends. Custom rigs with skinned
+geometry inside the arm subtree retain the source drawing-hand pose rather
+than modifying bones after skinning has cached them.
+
+Rebuild the engine and install the expanded player_anims.bin together.
+The animation installer and Windows copy/build checks require the bow action
+and carry clips. CI/eldenring-test-bow.cpp checks phase boundaries, held and
+early releases, continuous/split native sections and actual bank samples.
 
 Regional and boss music, and existing saves
 
 The launcher has Settings > Gameplay > Elden Ring regional and boss music. This
-is independent of the combat overhaul and defaults to off. Twenty ambience profiles
+is independent of the combat overhaul and defaults to on, matching the current
+Documents profile. Missing recordings still use native music. Twenty ambience profiles
 cover all 16 regions and 1,328 interior record IDs in Morrowind, Tribunal and
 Bloodmoon:
 
@@ -265,8 +376,14 @@ step, close the game and launcher, then run in Windows PowerShell:
 The update uses Documents\openmw and its already unpacked
 OpenMW-EldenCombat-Windows-x64 directory when present. Optional
 -DestinationDirectory and -PackageDirectory select other locations. It creates
-an updated ZIP as well. This helper must run on native Windows; this WSL session
-cannot start Windows executables (UtilBindVsockAnyPort socket error).
+an updated ZIP as well. This helper runs on native Windows. Earlier sandboxed
+WSL attempts failed with UtilBindVsockAnyPort; on 2026-10-17, approved execution
+outside the sandbox successfully ran cmd.exe /c ver. A process check found no
+running OpenMW game/launcher. The guarded updater then completed successfully,
+including the VS2026 Release engine/launcher/wizard/navmesh build and link,
+18/18 Windows tests and updated package/ZIP/checksum. The package is
+C:\Users\<user>\Documents\openmw\build-eldenring-package-x64.
+Interactive gameplay and visual confirmation remain to be performed.
 
 The Windows build writes eldenring-build-Release.log and
 eldenring-build-Release-errors.log in its build directory (other configurations
@@ -395,8 +512,9 @@ creature skeletons. Attacks use their imported clip identifiers and source
 frames, synchronized to weapon speed and hit-stop. Dodges, reactions, death,
 weapon stances, guard arm layers
 and directional locomotion also use the baked player clips when available.
-Stationary third-person spellcasts use the seal gestures described above;
-thrown weapons use the imported dart gesture synchronized to native release.
+Spells and activated enchanted items use the effect-based gestures described above;
+thrown weapons use the imported dart gesture, and bows use imported draw,
+aim and release phases synchronized to native shooting.
 The original native tracks still provide movement/text-key bookkeeping.
 Elden Ring parrying, weapon skills and stat
 scaling are also absent from the supplied recreation.
@@ -409,9 +527,10 @@ project must be rebuilt with the new header, including clip/stance metadata.
 Native equipment currently selects only 11 of those classes, including shield
 and torch; native weapon types do not identify every Elden Ring moveset.
 
-All 1,479 original clips, six added incantation phases and the dart throw are
-present in the local player_anims.bin (1,486 clips, 92,494 frames). Binary
-structure, clip references and all 13,041,654 pose values pass validation.
+All previous 1,520 clips plus 29 bow action/carry/movement clips are present
+in player_anims.bin (1,549 clips, 94,905 frames). The earlier clips remain
+byte-identical. Binary structure, clip references and all 13,381,605 pose
+values pass validation.
 This covers the selected player clips, not every player/enemy animation in
 Elden Ring. The ERAN loader shares one immutable bank across actors. The
 retargeter preserves native bone
@@ -422,8 +541,20 @@ This removes the outward curl caused by calibrating missing finger tips against
 a point behind the knuckle. Third-person two-handed-sword ready poses also close
 the supporting palm onto the equipped handle using native arm lengths. Handle
 geometry limits hand spacing on short hilts and follows offset shafts. This
-correction applies to the standing ready clip, with the normal pose fade;
-attacks, guards and other weapon types retain their existing arm poses.
+correction applies to standing, walking, directional running, sprinting and
+stop carry clips, with the normal pose fade; attacks, guards and other weapon
+types retain their existing arm poses. Native bone lengths and the leading
+hand/weapon pose remain unchanged. The actual xbase skeleton + Chrysamere mesh
+probe closes the supporting palm throughout idle, run and sprint to below
+0.000025 native units, including the sprint's lowered weapon.
+
+One-handed locomotion uses the authored gait for its weapon stance, including
+heavy-weapon a002 and spear a003 loops. An idle right-arm carry is layered only
+when using another stance category as a fallback (for example crouching).
+This preserves the run/sprint arm motion instead of freezing it in the idle
+pose relative to the camera. The rule applies in both camera modes; guard
+layers still take priority. All 26 formerly omitted one-handed gait/stop clips
+are now baked and required by installer/copy validation.
 The local asset audit covers all 17 two-handed-sword meshes used by 47 effective
 Morrowind, Tribunal and Bloodmoon weapon records, including Magebane's glass
 claymore, Adamantium's short handle and Daedric Crescent's offset handle.
@@ -496,6 +627,16 @@ charging when an opening permits it, counters, critical opportunities and
 defense with reaction delays, probability and cooldowns. Bipedal enemies check
 for walls and missing ground before dodging. Non-bipedal creatures use attack
 and stamina rules without humanoid shield/roll maneuvers.
+Melee openers and buffered continuations can start while turning when the
+target is within a 60-degree horizontal facing cone, native reach and line
+of sight. Waiting for the native 3-degree turn-completion tolerance starved
+attacks against continuously circling targets. Smooth turning is unchanged;
+actual hits still require native contact, facing, height and unobstructed reach.
+With Elden combat enabled, native spells/projectiles may start within 30 degrees
+of desired yaw and pitch while continuing their existing aim updates. Touch
+attacks use the melee cone. Turning no longer freezes a native attack already
+charging/releasing or its cooldown. Disabling Elden combat retains native AI
+behavior; each upstream base retains its own projectile aiming implementation.
 
 Tune NPC pacing in the launcher under Settings > Gameplay > Elden combat AI.
 The defaults below can also be overridden in elden-profile/settings.cfg:
@@ -527,6 +668,46 @@ direction and facing so navigation cannot redirect them toward walls or gaps.
 Guard counters can start during block recoil when the attack pause has elapsed.
 These controls apply to NPCs using Elden combat; player controls are unchanged.
 
+Tune stagger resistance under Settings > Gameplay > Elden combat enemy poise.
+It applies consistently to non-player NPCs and creatures, including followers;
+the player's stagger behavior is unchanged. Poise controls ordinary flinches,
+separately from health damage and the existing stance-break/critical meter.
+A hit below the remaining poise threshold still damages the target and reduces
+its stance, but does not cancel its current swing, buffered input or hit windows.
+Repeated hits deplete poise; heavy attacks deplete more. A poise-breaking hit
+staggering the target restores its poise for the next exchange. Stance breaks,
+critical attacks and explicit knockdowns bypass ordinary poise protection.
+
+Default poise uses modified Endurance and Strength above 40, with modest NPC
+armor contribution or creature maximum-health/level scaling. Maximum health,
+not current health, prevents a wounded enemy losing its resistance automatically.
+The unscaled threshold is capped at 45. Weak creatures (including high-Endurance
+rats with low health) still stagger from light hits. With installed Tribunal
+stats, Imperfect has about 40.8 poise: a fresh meter takes five 10-poise hits or
+two 30-poise hits to stagger, unless a stance break happens first. Actual weapon
+poise damage depends on the imported/fallback attack, so those are examples.
+Native armor, difficulty, enchantments and health damage are unchanged.
+
+  [Game]
+  elden ring enemy poise = true
+  elden ring enemy poise multiplier = 1.0
+  elden ring enemy poise recovery delay = 2.5
+  elden ring dodge stamina multiplier = 1.0
+
+Poise strength ranges from 0 to 3 times the stat-derived threshold. Set it to
+zero or disable the group to restore ordinary hit-by-hit interruptions. Recovery
+delay (0.25-10s) is the time without a damaging hit before poise fully recovers;
+longer delays let pressure wear it down for longer. Damage remains possible
+throughout; this is not damage immunity. Poise is transient across death/load.
+
+Settings > Gameplay > Elden combat dodge stamina sets Dodge stamina cost from
+0% to 300%, independently of weighted roll distances. 100% retains the source
+cost; 50% halves it; 0% makes rolls, crouch rolls and backsteps free, including
+at zero fatigue. This affects player and AI dodges with fallback or imported
+actions. Other action costs, dodge timing, invincibility and distance are unchanged.
+The existing positive-stamina start rule remains at nonzero cost: a dodge can
+consume the last stamina even when the bar holds less than the full cost.
+
 Tune player and humanoid AI roll distance in the launcher under Settings >
 Gameplay > Elden combat roll distances. The group checkbox enables weight-based
 distances and custom load thresholds; uncheck it to restore legacy distances
@@ -552,12 +733,53 @@ not change backstep distances. Existing Morrowind encumbrance still affects
 locomotion.
 
 Fatigue is the stamina display. Costs and regeneration scale to the actor's
-fatigue maximum. Spellcasting, swimming, flight, scripted animations and
-disabled player control retain the engine's appropriate existing behavior.
+fatigue maximum. Spellcasting, swimming, scripted animations and disabled
+player control retain the engine's appropriate existing behavior.
+Levitation keeps the Elden controller and imported poses active: standing/walking,
+melee chains, guarding, casting and dart throws continue in flight. Flight uses
+ordinary melee instead of jump attacks that wait for a landing, and stamina can
+recover while hovering. Jumping, rolling, backstepping, sprinting, crouching and
+attack root displacement require ground movement; levitation never fakes ground
+contact. OpenMW still owns flight speed, camera-pitch ascent, smoothing and
+collision. Existing jumps and aerial swings finish without waiting indefinitely
+for touchdown if levitation starts during them. When levitation ends, actual
+falling and landing behavior resumes. Swimming and unsupported animation rigs
+retain their native animation fallback.
 Combat input and action state are transient across load, death, resurrection
 and teleportation.
 Opening a menu cancels buffered/current attacks and heavy charging without
 resetting stamina, stance, critical vulnerability or defensive reactions.
+
+Passing through blocking characters
+
+Keep moving into the same character for about 1.5 seconds while they block your
+progress. That character becomes translucent (25% of their normal opacity), and
+you can walk through them. Collision and opacity return after you move clear;
+stopping inside them does not make you stuck again. Brief contact, standing on
+an actor, and movement without player input do not trigger passage. The feature
+works with NPCs and creatures, independently of the Elden combat toggle.
+
+Only movement collision between the player and that blocker is bypassed. World
+geometry, other actors, combat hits and projectiles retain their normal behavior.
+The visual factor composes with native invisibility, chameleon and distance
+fading without adding a spell. Passage state is temporary and is not saved.
+
+Customized build defaults
+
+The default settings now match the preferences read on 2026-10-18 from
+Documents/openmw/OpenMW-EldenCombat-Windows-x64/elden-profile/settings.cfg:
+difficulty -90; Elden music, smooth movement, smooth animation transitions and
+turn-to-movement enabled; 2560x1440 fullscreen; GUI scale 2; view distance 25092;
+distant terrain, radial fog, anisotropy 16, linear mipmaps, per-pixel/clustered
+lighting, sunlight alignment, 64 lights, soft particles, enhanced water,
+shadows and post-processing. All 31 applicable explicit settings are represented
+in files/settings-default.cfg (combat was already enabled). The selected save
+character and current map tab are session state and are not copied into defaults.
+
+The profile generator inherits the compiled defaults.bin instead of imposing its
+old 1280x720 windowed override. Existing profile settings, key bindings, content
+order and saves remain untouched. Rebuild/install to update defaults.bin; explicit
+user overrides still take precedence over defaults.
 
 Controls
 
@@ -678,9 +900,9 @@ actual travel with imported and fallback motion, and equipment changes before
 and during buffered rolls. Dart regressions cover preparation, held charge,
 release and recovery timing, invalid text keys and the locally baked source
 clip across playback speeds and update rates.
-Engine checks
-compile affected units to native Clang 18 C++20 objects; they do not link or run
-the complete Windows engine.
+Native object checks compile affected units with Clang 18 C++20; their scope
+is separate from the successful full Windows Release build/link and native
+regressions recorded below. No interactive gameplay has been performed.
 The AI suites cover finite light/heavy/off-hand/paired chains, a charged heavy
 follow-up, light/light/heavy combinations, post-chain pauses, interrupted chains,
 reaction delays, and fast attacks at low frame rates. Controller regressions
@@ -694,11 +916,14 @@ actual imported combat clips, including repeated idle and greatsword gait loops,
 alongside the neutral foot and pose-heading checks. Arm-reach checks preserve
 native segment lengths, handle unreachable targets and retain the elbow plane.
 The eldengrip suite checks handle sections, short and offset grips, gaps and
-unusable geometry. The full-engine eldenspear harness also covers native
-two-joint finger curl and the two-handed-sword ready correction through actual
-bone callbacks, including weapon changes and transitions. It is compiled here;
-running that OSG-linked harness and visually confirming the grip require the
-Windows rebuild. The build helper includes all three renderer suites.
+unusable geometry. The eldenspear harness also covers native two-joint finger
+curl, shield-release blending and two-handed sword carry closure through actual
+bone callbacks, including weapon changes and transitions. It now links and runs
+locally with pinned OSG/OpenThreads, passing 940 synthetic and 9,931 real-bank
+assertions. The actual native xbase skeleton + Chrysamere mesh probe confirms
+idle/run/sprint palm contact below 0.000025 native units. These CPU callback
+checks create no graphics context; visual confirmation still needs the rebuilt
+game. The Windows build helper includes all three renderer suites.
 The new launcher settings pass UI generation and native settings-page compilation;
 their Windows execution and the feel of the new AI still need a gameplay check.
 The actual Lua controls script chain also passes 24 assertions with mocked
@@ -723,11 +948,16 @@ The animation suite also checks sprint pose facing in cardinal, diagonal and
 intermediate directions, speed-independent headings, return to target-facing
 movement on sprint release, and preservation of directional walk/crouch clips.
 
-These checks do not establish gameplay correctness. An existing Windows package
-was found with the engine and INI importer but no launcher; its CMake cache has
-BUILD_LAUNCHER and BUILD_WIZARD disabled. This session cannot write the Windows
-mount or invoke Windows executables. Source fixes must be copied and rebuilt.
-Use copy-to-documents.sh from WSL for the fresh copy. The older
+These checks do not establish gameplay correctness. An earlier Windows package
+was found with the engine and INI importer but no launcher; that cache had
+BUILD_LAUNCHER and BUILD_WIZARD disabled. Current build helpers include both by
+default. Sandbox access alone cannot write the Windows mount; approved native
+Windows execution was verified on 2026-10-17 and the guarded updater completed
+successfully. Source fixes and the expanded bank were copied, verified, rebuilt
+and installed together. Existing openmw.cfg/settings.cfg remained byte-identical;
+package executable and bank hashes and ZIP contents/checksum passed verification.
+Use CI/eldenring-update-windows.ps1 for the established full update, or
+copy-to-documents.sh from WSL for a separate fresh copy. The older
 CI/eldenring-sync-audit-windows.ps1 requires an existing configured Windows
 build and matching manifest hashes; it updates the engine, defaults and an
 already configured/packaged launcher. Use the full
@@ -741,7 +971,8 @@ NVIDIA recording and Instant Replay (Windows)
 
 OpenMW renders with OpenGL. NVIDIA supports OpenGL recording through Desktop
 capture in windowed or borderless mode; no NVIDIA SDK integration is needed for
-ordinary overlay recording. The generated profile uses Windowed (window mode = 2).
+ordinary overlay recording. New profiles now inherit the customized Documents
+build's Fullscreen preference (window mode = 0).
 For screen-filling capture, select Windowed Fullscreen in the launcher's Graphics
 tab (window mode = 1 in the [Video] section of elden-profile/settings.cfg).
 
@@ -781,9 +1012,10 @@ toolchains. It includes the generated timing header and copies the validated
 animation bank to local-assets/player_anims.bin and available imported music to
 local-assets/music/eldenring, plus dodge, block and counter recordings to
 local-assets/sound/eldenring/dodge for the Windows build helper. Both copy paths
-validate the full animation inventory before writing: the current 1,486-clip
-bank includes all six seal/incantation phases, the dart throw and 244 jump-attack
-landing clips.
+validate the full animation inventory before writing: the current 1,549-clip
+bank includes all 14 seal/incantation phases, the dart throw, 29 bow clips,
+244 jump-attack landing clips and one-/two-handed locomotion for every mapped
+stance.
 An older bank with only the ERAN
 header and melee clips is rejected before changing destination files. Imported
 audio currently includes 15 combat recordings and 28 music recordings; their
@@ -921,3 +1153,32 @@ it produces OpenMW-EldenCombat-Windows-x64.zip.
 Morrowind game data is required to play. It is not bundled in the package.
 The component retains the recreation's MIT copyright notice and license in
 components/eldencombat/LICENSE-MIT.txt; the combined OpenMW engine remains GPLv3.
+
+2026-10-17 pose follow-up validation
+
+Both engine checkouts pass 15 standalone suites, 12 installer and 12 copy
+regressions, plus actual-bank combat/gait checks. Production renderer callbacks
+now link and run locally against pinned OSG/OpenThreads: 940 synthetic and
+9,931 real-bank assertions pass. The original pre-fix renderer reproduces the
+shield release failure and Chrysamere running/sprinting hand offset. The
+callback executable requires no graphics context and is not a full engine run.
+Ignored local runner: ../openmw/build-tools-local/run-renderer-validation.py.
+Reports: build-eldencombat/*pose-followup-final* (newer renderer report prefix
+renderer-shield-grip-final), with the actual native mesh/skeleton probe under
+newer build-eldencombat/elden-native-grip-*.
+
+The original openmw checkout was copied to Windows with SHA verification of
+3,836 source/resource files, one bank, 28 music recordings and 15 combat sounds.
+The guarded updater exited 0 after the VS2026 Release engine, launcher, wizard
+and navmesh build/link. All 18 Windows CTest suites passed. Native real-bank
+checks passed 727,386 spell, 1,141,186 dart, 327,150 retarget and 9,931 weapon
+callback assertions. openmw and Start-EldenCombat command-line startup/version
+checks passed with version 0.52.0. The installed package is
+C:\Users\<user>\Documents\openmw\build-eldenring-package-x64; its executable
+matches Release and its bank matches the current 1,520-clip bank. The refreshed
+ZIP contents/checksum passed verification and existing openmw.cfg/settings.cfg
+remained byte-identical. No interactive gameplay or visual check was performed.
+Complete build and CTest logs are under original openmw/build-eldencombat/
+windows-pose-followup-{build,build-errors,ctest}.log, with update.log and
+before/after JSON snapshots using the same prefix. The separate captured-output
+log contains truncated native install output, not the complete build report.

@@ -4,7 +4,7 @@ MIT license: scripts/eldenring_music/LICENSE-MIT.txt.
 Contains no generated timings, animation poses, or game archives.
 
 diff --git a/tools/bake_anims.py b/tools/bake_anims.py
-index 96c3368..ada5411 100644
+index 96c3368..d44c7b5 100644
 --- a/tools/bake_anims.py
 +++ b/tools/bake_anims.py
 @@ -8,8 +8,10 @@ into the sandbox's right-handed space (+X left, +Y up, +Z forward).
@@ -26,7 +26,7 @@ index 96c3368..ada5411 100644
  
  JOINTS = [
      "Pelvis", "Spine", "Spine1", "Spine2", "Neck", "Head",
-@@ -50,8 +53,31 @@ EXTRA = [
+@@ -50,8 +53,65 @@ EXTRA = [
      ("a00", 202040),   # airborne loop, for jumps and falls alike
      ("a00", 4000),     # start of a fall off a ledge
      ("a00", 17002),    # death
@@ -34,8 +34,30 @@ index 96c3368..ada5411 100644
 +    ("a433", 45000), ("a433", 45010),  # Urgent Heal: windup, cast (self)
 +    ("a506", 45000), ("a506", 45010),  # Catch Flame: windup, cast (touch)
 +    ("a417", 45000), ("a417", 45011),  # Flame Sling: windup, uncharged cast (target)
++    ("a426", 45000), ("a426", 45010),  # Shadow Bait / Darkness: spectral conjuration
++    ("a431", 45000), ("a431", 45010),  # Flame, Grant Me Strength: self fortification
++    ("a434", 45000), ("a434", 45011),  # Heal: kneeling area restoration
++    ("a436", 45000), ("a436", 45011),  # Lightning Spear: uncharged shock projectile
++    ("a44", 36010), ("a44", 36020), ("a44", 36000),  # Longbow: draw, held aim, release/recovery
++    ("a14", 0),  # Bow carry, selected by Longbow EquipParamWeapon row 41000000
++    ("a14", 20000), ("a14", 20001), ("a14", 20002), ("a14", 20003),
++    ("a14", 20100), ("a14", 20101), ("a14", 20102), ("a14", 20103),
++    ("a14", 20200),
++    ("a14", 22100), ("a14", 22101), ("a14", 22102), ("a14", 22103),
++    ("a14", 300000),
++    ("a14", 320000), ("a14", 320001), ("a14", 320002), ("a14", 320003),
++    ("a14", 320100), ("a14", 320101), ("a14", 320102), ("a14", 320103),
++    ("a14", 322100), ("a14", 390000), ("a14", 390001),
  ]
  
++# Longbow draw 036010 ends at frame 30; 036020 holds that pose on a 60-frame
++# loop. 036000 starts at the same pose and emits TAE BulletBehavior (event 2,
++# BehaviorJudgeID 300) at frame 0, then returns to carry by frame 50. Keep the
++# held pose and release free of a second runtime blend: OpenMW fits these
++# source phases to its native shoot keys and owns arrows, aiming and damage.
++# The source FK confirms the draw/hold/release seams within compression error.
++BOW_CONTINUATIONS = {("a44", 36020), ("a44", 36000)}
++
 +# These right-hand seal gestures are selected by Magic rows 6420, 6000, 6010.
 +# In current MAGIC_PARAM_ST the category byte is at 0x26 and motion category
 +# at 0x29; each is incantation category 1 with TAE = 400 + motion category.
@@ -49,16 +71,28 @@ index 96c3368..ada5411 100644
 +# Format references:
 +# https://dasaav-dsv.github.io/libER/d6/d4f/MAGIC__PARAM__ST_8hpp_source.html
 +# https://github.com/Meowmaritus/DSAnimStudio/blob/master/DSAnimStudioNETCore/Res/TAE.Template.ER.xml
++# Effect-specific additions use Magic rows 6520/6530, 6050, 6421 and 6900.
++# Their cast events are at local frames 18, 15, 20 and 15 respectively.
++# The Heal preparation already kneels; skip the optional 045010/045012 hold.
++# Its 045011 release includes the complete return to standing. Blend its
++# small hold-pose seam and Lightning Spear's uncharged entrance for 6 frames,
++# ending before either release event. Shadow Bait and fortification have
++# matching preparation/release endpoints and need no extra entrance blend.
++# Spell labels: https://github.com/soulsmods/Paramdex/blob/master/ER/Names/Magic.txt
 +SPELL_CONTINUATIONS = {
 +    ("a433", 45010): (45000, 0),
 +    ("a506", 45010): (45000, 0),
 +    ("a417", 45011): (45000, 7),
++    ("a426", 45010): (45000, 0),
++    ("a431", 45010): (45000, 0),
++    ("a434", 45011): (45000, 6),
++    ("a436", 45011): (45000, 6),
 +}
 +
  STANCE_IDLE, STANCE_GUARD = 0, 100
  # ...and the run's stop in each direction.
  STANCE_LOCOMOTION = (20000, 20001, 20002, 20003, 20100, 20101, 20102, 20103, 20200, 22100, 22101, 22102, 22103)
-@@ -65,6 +91,32 @@ def mirror(v):
+@@ -65,18 +125,45 @@ def mirror(v):
      return (v[0], v[1], -v[2])
  
  
@@ -91,7 +125,24 @@ index 96c3368..ada5411 100644
  def wanted_clips(src, gathered=None):
      """(TAE file, animation id) of every clip the sandbox plays, in a stable order.
      `gathered` is extract.gather(src), if the caller already has it."""
-@@ -93,6 +145,15 @@ def main():
+     weapons, attacks, air = gathered or gather(src)
+     wanted = [(file, anim_id) for _variant, file, anim_id in BASE + REACTIONS] + EXTRA
+     wanted += [("a00", anim_id) for _variant, start, end in SWAPS for anim_id in (start, end)]
+-    # Every stance a weapon can be held in: idle and guard, plus the full
+-    # locomotion set that two-handed stances carry.
++    # Every stance has authored locomotion, including the one-handed heavy
++    # (a002) and spear (a003) carries. Using an idle arm over the base gait
++    # discards the movement of those authored weapon arms.
+     for weapon in weapons:
+         one, two = weapon["stance"]
+-        wanted += [("a%02d" % one, STANCE_IDLE), ("a%02d" % one, STANCE_GUARD)]
+-        wanted += [("a%02d" % two, anim_id) for anim_id in (STANCE_IDLE, STANCE_GUARD, *STANCE_LOCOMOTION)]
++        for stance in (one, two):
++            wanted += [("a%02d" % stance, anim_id) for anim_id in (STANCE_IDLE, STANCE_GUARD, *STANCE_LOCOMOTION)]
+     wanted = [(file, anim_id) for file, anim_id in wanted if src.hkx_name(file, anim_id)]
+     wanted += [(file, anim_id) for *_rest, file, anim_id in attacks]
+     wanted += [(file, anim_id) for *_rest, file, anim_id in air]
+@@ -93,7 +180,20 @@ def main():
          for _, n, d in open_bnd(SRC / f"{pack}.anibnd.dcx"):
              if n.endswith(".hkx"):
                  hkx.setdefault(PureWindowsPath(n).stem, d)
@@ -105,13 +156,20 @@ index 96c3368..ada5411 100644
 +    if missing:
 +        raise ValueError("Missing seal animations: " + ", ".join(sorted(missing)))
      src.hkx = hkx
++    missing_bow = [clip_name(file, anim_id) for file, anim_id in EXTRA
++                   if file in ("a14", "a44") and not src.hkx_name(file, anim_id)]
++    if missing_bow:
++        raise ValueError("Missing bow animations: " + ", ".join(missing_bow))
  
      joint_index = [names.index(j) for j in JOINTS]
-@@ -105,13 +166,20 @@ def main():
+     oriented_index = [names.index(j) for j in ORIENTED]
+@@ -105,13 +205,22 @@ def main():
          source = src.hkx_name(file, anim_id)
          anim = hkanim.Animation(hkx[source])
          blend = blend_frames(src, file, anim_id)
 +        previous, entrance_blend = None, 0
++        if (file, anim_id) in BOW_CONTINUATIONS:
++            blend = 0.0
 +        if (file, anim_id) in SPELL_CONTINUATIONS:
 +            windup, entrance_blend = SPELL_CONTINUATIONS[file, anim_id]
 +            blend = 0.0
@@ -131,7 +189,7 @@ index 96c3368..ada5411 100644
              model = fk(parents, local)
              row = []
              for i in joint_index:
-@@ -124,7 +192,9 @@ def main():
+@@ -124,7 +233,9 @@ def main():
          clips.append((name, blend, frames))
  
      OUT.parent.mkdir(exist_ok=True)
@@ -142,7 +200,7 @@ index 96c3368..ada5411 100644
          f.write(b"ERAN")
          f.write(struct.pack("<III", len(JOINTS), len(ORIENTED), len(clips)))
          for group in (JOINTS, ORIENTED):
-@@ -137,6 +207,7 @@ def main():
+@@ -137,6 +248,7 @@ def main():
              f.write(struct.pack("<fI", blend, len(frames)))
              for row in frames:
                  f.write(struct.pack("<%df" % len(row), *row))
@@ -246,14 +304,15 @@ index 49ab59e..bb57506 100644
  def blend_frames(src, file, anim_id):
 diff --git a/tools/test_bake_anims.py b/tools/test_bake_anims.py
 new file mode 100644
-index 0000000..f6e5970
+index 0000000..122c02d
 --- /dev/null
 +++ b/tools/test_bake_anims.py
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,92 @@
 +"""Checks for the seal gesture continuation blend; no game assets are read."""
 +import math
 +import unittest
 +from pathlib import Path
++from types import SimpleNamespace
 +from unittest.mock import patch
 +
 +import paths
@@ -288,6 +347,55 @@ index 0000000..f6e5970
 +        old = [((0., 0., 0.), (0., 0., 0., 1.))]
 +        new = [((1., 2., 3.), (0., 0., 1., 0.))]
 +        self.assertIs(bake_anims.continuation_pose(old, new, 0, 0), new)
++
++    def test_effect_gestures_preserve_release_and_recovery(self):
++        # Release/stop frames verified from the local source TAE/HKX. The
++        # kneeling Heal skips an optional hold, and uncharged Lightning Spear
++        # needs a short entrance blend; neither may shift its release pose.
++        profiles = (("a426", 45010, 18, 65), ("a431", 45010, 15, 60),
++                    ("a434", 45011, 20, 100), ("a436", 45011, 15, 56))
++        old = [((0., 1., 2.), (0., 0., 0., 1.))]
++        new = [((2., 3., 4.), (0., 1., 0., 0.))]
++        for category, cast, release, end in profiles:
++            with self.subTest(category=category):
++                windup, blend = bake_anims.SPELL_CONTINUATIONS[category, cast]
++                self.assertIn((category, windup), bake_anims.EXTRA)
++                self.assertIn((category, cast), bake_anims.EXTRA)
++                self.assertLess(blend, release)
++                if blend:
++                    self.assertIs(bake_anims.continuation_pose(old, new, 0, blend), old)
++                for frame in range(release, end + 1):
++                    self.assertIs(bake_anims.continuation_pose(old, new, frame, blend), new)
++
++
++class LocomotionInventoryTests(unittest.TestCase):
++    def test_bow_phases_and_carries_do_not_depend_on_melee_weapon_table(self):
++        source = SimpleNamespace(hkx_name=lambda file, anim: bake_anims.clip_name(file, anim))
++        wanted = bake_anims.wanted_clips(source, ([], [], []))
++        # OpenMW owns ranged mechanics, so bow poses are deliberately outside
++        # the sandbox's melee action extraction and must survive that filter.
++        for animation in (36010, 36020, 36000):
++            self.assertIn(("a44", animation), wanted)
++        for animation in (0, *bake_anims.STANCE_LOCOMOTION, 300000,
++                          *range(320000, 320004), *range(320100, 320104), 322100):
++            self.assertIn(("a14", animation), wanted)
++        self.assertEqual(len(wanted), len(set(wanted)))
++
++    def test_one_and_two_handed_stances_keep_every_authored_gait(self):
++        source = SimpleNamespace(hkx_name=lambda file, anim: bake_anims.clip_name(file, anim))
++        weapons = [{"stance": pair} for pair in ((0, 10), (2, 12), (3, 13))]
++        wanted = bake_anims.wanted_clips(source, (weapons, [], []))
++        self.assertEqual(len(wanted), len(set(wanted)))
++        for stance in (0, 2, 3, 10, 12, 13):
++            for animation in bake_anims.STANCE_LOCOMOTION:
++                with self.subTest(stance=stance, animation=animation):
++                    self.assertIn((f"a{stance:02}", animation), wanted)
++
++    def test_missing_source_gait_is_not_invented(self):
++        source = SimpleNamespace(hkx_name=lambda file, anim: None if (file, anim) == ("a02", 20200) else "exists")
++        wanted = bake_anims.wanted_clips(source, ([{"stance": (2, 12)}], [], []))
++        self.assertNotIn(("a02", 20200), wanted)
++        self.assertIn(("a12", 20200), wanted)
 +
 +
 +if __name__ == "__main__":
