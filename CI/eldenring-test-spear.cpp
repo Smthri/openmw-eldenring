@@ -89,7 +89,7 @@ namespace
         std::string bytes = "ERAN";
         u32(bytes, joints.size());
         u32(bytes, weaponAxes ? 3 : 1);
-        u32(bytes, 5);
+        u32(bytes, 13);
         for (const auto joint : joints)
             name(bytes, joint);
         name(bytes, "Head");
@@ -103,10 +103,13 @@ namespace
             f32(bytes, v.z());
             f32(bytes, v.y());
         };
-        for (std::string_view clip : { "a000_000000", "a012_000000", "a013_000000", "a036_032505", "a036_032500" })
+        for (std::string_view clip : {
+                 "a000_000000", "a012_000000", "a013_000000", "a036_032505", "a036_032500",
+                 "a000_000100", "a015_000100", "a012_020100", "a012_020200",
+                 "a014_000000", "a044_036010", "a044_036020", "a044_036000" })
         {
             auto positions = p;
-            if (clip == "a012_000000")
+            if (clip == "a012_000000" || clip == "a012_020100" || clip == "a012_020200")
             {
                 positions[8] = { -.20f, .16f, 1.2f };
                 positions[9] = { -.08f, .22f, 1.22f };
@@ -146,6 +149,20 @@ namespace
                 if (weaponAxes)
                     for (int side = 0; side != 2; ++side)
                     {
+                        if (side == 1 && (clip == "a000_000100" || clip == "a015_000100"))
+                        {
+                            vector({0, 0, 1});
+                            vector({1, 0, 0});
+                            vector({0, -1, 0});
+                            continue;
+                        }
+                        if (side == 1 && (clip.starts_with("a014_") || clip.starts_with("a044_")))
+                        {
+                            vector(bodyRotation * osg::Vec3f(0, 1, 0));
+                            vector(bodyRotation * osg::Vec3f(0, 0, -1));
+                            vector(bodyRotation * osg::Vec3f(-1, 0, 0));
+                            continue;
+                        }
                         const bool turn = clip == "a036_032500";
                         vector(turn ? osg::Vec3f(0, 1, 0) : osg::Vec3f(-1, 0, 0));
                         vector(turn ? osg::Vec3f(1, 0, 0) : osg::Vec3f(0, 1, 0));
@@ -192,8 +209,9 @@ namespace
     {
         osg::ref_ptr<osg::Group> mRoot = new osg::Group;
         MWRender::Animation::NodeMap mNodes;
-        osg::ref_ptr<NifOsg::MatrixTransform> mHand, mWeapon;
+        osg::ref_ptr<NifOsg::MatrixTransform> mHand, mWeapon, mShield;
         osg::ref_ptr<NativeWeapon> mNative = new NativeWeapon;
+        osg::ref_ptr<NativeWeapon> mNativeShield = new NativeWeapon;
         std::unique_ptr<MWRender::EldenAnimation> mAnimation;
 
         NifOsg::MatrixTransform* bone(std::string key, osg::Group* parent, osg::Vec3f translation)
@@ -236,6 +254,9 @@ namespace
                 auto* leftUpper = bone("bip01 l upperarm", neck, {-10, 0, 0});
                 auto* leftForearm = bone("bip01 l forearm", leftUpper, {-15, 0, 0});
                 auto* leftHand = bone("bip01 l hand", leftForearm, {-15, 0, 0});
+                mNativeShield->mTranslation = {-5, .3f, -1.3f};
+                mShield = bone("shield bone", leftHand, mNativeShield->mTranslation);
+                mShield->setRotation(mNativeShield->mRotation);
                 for (const char* side : { "l", "r" })
                 {
                     const std::string prefix = std::string("bip01 ") + side + " finger";
@@ -268,6 +289,8 @@ namespace
             check(mAnimation->valid(), "fixture rig was rejected");
             // Model base_anim's permanent controller: restore must precede it.
             mWeapon->addUpdateCallback(mNative.get());
+            if (mShield)
+                mShield->addUpdateCallback(mNativeShield.get());
             for (const auto& [node, callback] : mAnimation->beforeNativeControllers())
             {
                 callback->setNestedCallback(node->getUpdateCallback());
@@ -298,6 +321,123 @@ namespace
             update();
         }
     };
+
+    void bowAttachments(std::shared_ptr<const EldenCombat::AnimationBank> bank)
+    {
+        const auto* clip = bank->find("a044_036010");
+        check(clip, "bow draw fixture missing");
+        const auto axes = bank->axesOffset("L_Weapon");
+        check(axes.has_value(), "bow axes missing");
+        for (bool reverse : { false, true })
+            for (bool upperBody : { false, true })
+            {
+                Rig rig(bank, false, true);
+                auto* left = rig.mNodes.at("bip01 l hand").get();
+                const auto leftBind = rig.modelMatrix(left);
+                const auto rightBind = rig.modelMatrix(rig.mHand);
+                osg::Vec3f palm = osg::Matrixf::transform3x3(rig.mNative->mTranslation, rightBind);
+                palm.x() *= -1.f;
+                palm = osg::Matrixf::transform3x3(palm, osg::Matrixf::inverse(leftBind));
+                auto* upper = rig.mNodes.at("bip01 r upperarm").get();
+                if (reverse)
+                {
+                    auto* parent = upper->getParent(0);
+                    osg::ref_ptr<osg::Node> keep = upper;
+                    parent->removeChild(upper);
+                    parent->addChild(keep);
+                }
+                // This child stands in for the bow's native animated nock:
+                // no controller or transform on the equipped mesh is replaced.
+                auto* nock = rig.bone("ArrowBone", rig.mWeapon, {0, 0, 0});
+                osg::ref_ptr<osg::Geometry> arrow = new osg::Geometry;
+                osg::ref_ptr<osg::Vec3Array> arrowVertices = new osg::Vec3Array;
+                for (const auto& vertex : {
+                    osg::Vec3f(-.2f, -8, -.2f), osg::Vec3f(.2f, -8, -.2f), osg::Vec3f(0, 2, 0),
+                    osg::Vec3f(-.2f, -8, .2f), osg::Vec3f(.2f, -8, .2f), osg::Vec3f(0, 2, 0),
+                })
+                    arrowVertices->push_back(vertex);
+                arrow->setVertexArray(arrowVertices);
+                arrow->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES, 0, arrowVertices->size()));
+                nock->addChild(arrow);
+                osg::ref_ptr<NativeWeapon> nativeNock = new NativeWeapon;
+                nativeNock->mScale = .8f;
+                nock->addUpdateCallback(nativeNock);
+                std::vector<float> sample;
+                for (int tick = 0; tick != 16; ++tick)
+                {
+                    const float frame = float(tick % 8) / 7.f * float(clip->mFrames - 1);
+                    const float pitch = -.65f + .1f * tick;
+                    const float yaw = -.4f + .05f * tick;
+                    nativeNock->mTranslation = {float(tick), 2, 3};
+                    check(rig.mAnimation->play("a044_036010", frame, false, 1.f, yaw, {}, {}, {},
+                              false, false, upperBody, true, pitch), "bow pose rejected");
+                    // One traversal only: a second update could hide stale
+                    // left-arm reads when the right branch is visited first.
+                    rig.update();
+                    check(close(rig.modelMatrix(rig.mWeapon).getTrans(), palm * rig.modelMatrix(left)),
+                        "bow attachment did not follow the current left palm");
+                    bank->sample(*clip, frame, false, sample);
+                    osg::Vec3f forward(-sample[*axes], sample[*axes + 2], sample[*axes + 1]);
+                    forward.normalize();
+                    const osg::Quat aim(pitch, osg::Vec3f(-1, 0, 0));
+                    const osg::Quat facing(yaw, osg::Vec3f(0, 0, 1));
+                    check(close(rig.modelRotation(rig.mWeapon) * osg::Vec3f(1, 0, 0), facing * (aim * forward)),
+                        "native bow firing direction diverged from imported bow aim");
+                    check(close(nock->getMatrix().getTrans(), nativeNock->mTranslation),
+                        "bow pose replaced the native nock translation");
+                    check(close(nock->mRotationScale.toOsgMatrix().getRotate(), nativeNock->mRotation),
+                        "bow pose replaced the native nock rotation");
+                    check(std::abs(rig.mWeapon->mScale - rig.mNative->mScale) < 1e-6f,
+                        "bow pose changed native equipment scale");
+                }
+                const auto rightPalm = [&] {
+                    return rig.mNative->mTranslation * rig.modelMatrix(rig.mHand);
+                };
+                // Use a reachable moving string target, updated by the native
+                // bow callback in this traversal, then solve before consumers.
+                const float lastFrame = float(clip->mFrames - 1);
+                for (int tick = 0; tick != 5; ++tick)
+                {
+                    const osg::Vec3f target = rightPalm() + osg::Vec3f(.2f, -.3f, .1f);
+                    nativeNock->mTranslation = target * osg::Matrixf::inverse(rig.modelMatrix(rig.mWeapon))
+                        - nativeNock->mRotation * osg::Vec3f(0, -8, 0) * nativeNock->mScale;
+                    check(rig.mAnimation->play("a044_036010", lastFrame, false, 1.f, .35f, {}, {}, {},
+                              false, false, upperBody, true, .85f, 1.f), "bow nock pose rejected");
+                    rig.update();
+                    check(close(rightPalm(), osg::Vec3f(0, -8, 0) * rig.modelMatrix(nock)),
+                        "bow draw hand missed the physical tail of the current native arrow");
+                    check(close(osg::Vec3f(0, -8, 0) * rig.modelMatrix(nock), target),
+                        "aligning the arrow moved its nock off the native string");
+                    check(close(rig.modelRotation(nock) * osg::Vec3f(0, 1, 0),
+                              rig.modelRotation(rig.mWeapon) * osg::Vec3f(1, 0, 0)),
+                        "attached arrow points away from the intended firing direction");
+                    check(close(rig.modelMatrix(rig.mWeapon).getTrans(), palm * rig.modelMatrix(left)),
+                        "nock closure moved the bow away from its holding hand");
+                }
+                const osg::Vec3f held = rightPalm();
+                nock->removeChildren(0, nock->getNumChildren());
+                check(rig.mAnimation->play("a044_036000", 0, false, .001f, .35f, {}, {}, {},
+                          false, false, upperBody, true, .85f, 0.f), "bow release rejected");
+                rig.update();
+                check((rightPalm() - held).length() < .2f,
+                    "bow release snapped away from the displayed draw-hand correction");
+                rig.mAnimation->clear();
+                check(close(rig.mWeapon->getMatrix().getTrans(), rig.mNative->mTranslation),
+                    "clearing bow pose left a relocated right attachment");
+                check(close(rig.mWeapon->mRotationScale.toOsgMatrix().getRotate(), rig.mNative->mRotation),
+                    "clearing bow pose left imported equipment rotation");
+                rig.play("a013_000000");
+                check(close(rig.mWeapon->getMatrix().getTrans(), rig.mNative->mTranslation),
+                    "switching from bow to spear retained bow translation");
+                check(!rig.mAnimation->play("missing bow", 0, false, 1, 0, {}, {}, {},
+                          false, false, upperBody, true), "missing bow clip was accepted");
+                check(close(rig.mWeapon->getMatrix().getTrans(), rig.mNative->mTranslation),
+                    "missing bow clip did not restore native attachment");
+            }
+        Rig noLeft(bank);
+        check(!noLeft.mAnimation->play("a044_036010", 0, false, 1, 0, {}, {}, {}, false, false, false, true),
+            "bow accepted a rig without its holding hand");
+    }
 
     void humanoidCreatureRigs()
     {
@@ -638,6 +778,149 @@ namespace
         check(close(play(rig, .5f, true, 1.f / 60.f), target(.5f)), "loop playback retained a spurious blend");
     }
 
+    void shieldRelease(const std::shared_ptr<const EldenCombat::AnimationBank>& bank)
+    {
+        for (bool twoHanded : { false, true })
+        {
+            Rig rig(bank, true, true);
+            const auto play = [&](bool guard, float duration, float yaw = 0.f) {
+                const std::string_view layer = twoHanded ? "a015_000100" : "a000_000100";
+                check(rig.mAnimation->play("a000_000000", 0.f, true, duration, yaw,
+                          guard ? layer : "", guard && twoHanded ? layer : ""),
+                    "shield release clip rejected");
+                rig.update();
+            };
+            const auto nativeRotation = [&] {
+                return rig.mNativeShield->mRotation * rig.modelRotation(rig.mNodes.at("bip01 l hand").get());
+            };
+            play(true, 1.f);
+            const osg::Quat guarded = rig.modelRotation(rig.mShield.get());
+            check(!close(guarded, nativeRotation()), "shield release fixture lacks an attachment correction");
+            play(false, 0.f);
+            check(close(rig.modelRotation(rig.mShield.get()), guarded),
+                "releasing block instantly flipped the shield while the guard arm was still raised");
+
+            // Native controllers can animate their attachment during release.
+            // Blend toward that current pose, including translation-only frames.
+            rig.mNativeShield->mRotation = osg::Quat(.42f, osg::Vec3f(0, 0, 1));
+            play(false, .03f);
+            osg::Quat expected;
+            expected.slerp(.15625f, guarded, nativeRotation());
+            check(close(rig.modelRotation(rig.mShield.get()), expected),
+                "shield release did not crossfade toward the current native attachment");
+            rig.mNativeShield->mWriteRotation = false;
+            play(false, .03f);
+            expected.slerp(.5f, guarded, nativeRotation());
+            check(close(rig.modelRotation(rig.mShield.get()), expected),
+                "shield release lost its native rotation on a translation-only controller");
+            check(close(rig.mShield->getMatrix().getTrans(), rig.mNativeShield->mTranslation),
+                "shield release changed the attachment offset");
+            check(std::abs(rig.mShield->mScale - rig.mNativeShield->mScale) < 1e-5f,
+                "shield release changed the attachment scale");
+
+            const osg::Quat releasing = rig.modelRotation(rig.mShield.get());
+            play(true, 0.f);
+            check(close(rig.modelRotation(rig.mShield.get()), releasing),
+                "raising block during release snapped the shield back to guard");
+            play(true, 1.f, .65f);
+            const osg::Quat turningGuard = rig.modelRotation(rig.mShield.get());
+            play(false, 0.f, -.4f);
+            check(close(rig.modelRotation(rig.mShield.get()), turningGuard),
+                "turning on guard release discarded the displayed shield orientation");
+            play(false, 1.f, -.4f);
+            check(close(rig.modelRotation(rig.mShield.get()), nativeRotation()),
+                "shield release did not finish on the native attachment pose");
+            rig.mNativeShield->mRotation = osg::Quat(-.3f, osg::Vec3f(0, 1, 0));
+            rig.mNativeShield->mWriteRotation = true;
+            play(false, .016f, -.4f);
+            check(close(rig.modelRotation(rig.mShield.get()), nativeRotation()),
+                "completed shield release retained control of the native attachment");
+        }
+    }
+
+    void shieldGuard(const std::shared_ptr<const EldenCombat::AnimationBank>& bank, bool actualBank = false)
+    {
+        Rig rig(bank, true, true);
+        const auto play = [&](float duration, float yaw = 0.f, std::string_view rightArm = {}) {
+            check(rig.mAnimation->play("a000_000000", 0.f, true, duration, yaw,
+                      "a000_000100", rightArm),
+                "shield guard clip rejected");
+            rig.update();
+        };
+        play(1.f);
+        const osg::Quat guarded = rig.modelRotation(rig.mShield.get());
+        const osg::Vec3f up = guarded * osg::Vec3f(0, 1, 0);
+        const osg::Vec3f front = guarded * osg::Vec3f(0, 0, 1);
+        check(up.z() > .7f, "shield top points down during imported guard");
+        check(front.y() > .9f, "shield face fails to cover the actor during imported guard");
+        check(close(rig.mShield->getMatrix().getTrans(), rig.mNativeShield->mTranslation),
+            "shield correction changed its native wrist offset");
+        check(std::abs(rig.mShield->mScale - rig.mNativeShield->mScale) < 1e-5f,
+            "shield correction changed native attachment scale");
+        check(close(rig.mWeapon->mRotationScale.toOsgMatrix().getRotate(), rig.mNative->mRotation),
+            "shield guard changed the right-hand weapon attachment");
+        if (actualBank)
+        {
+            std::vector<float> sample;
+            bank->sample(*bank->find("a000_000100"), 30.f, true, sample);
+            const std::size_t axes = *bank->axesOffset("L_Weapon");
+            const auto source = [&](std::size_t at) {
+                return osg::Vec3f(-sample[at], sample[at + 2], sample[at + 1]);
+            };
+            check(close(up, source(axes)), "shield top does not follow the authored guard equipment frame");
+            check(close(front, -source(axes + 6)), "shield front does not follow the authored guard equipment frame");
+        }
+        else
+        {
+            check(close(up, {0, 0, 1}), "shield guard discarded source up axis");
+            check(close(front, {0, 1, 0}), "shield guard discarded source face axis");
+            const osg::Quat shown = rig.modelRotation(rig.mShield.get());
+            play(0.f, 1.57079632679f, "a013_000000");
+            check(close(rig.modelRotation(rig.mShield.get()), shown),
+                "changing the moving guard layer snapped the shield orientation");
+            play(1.f, 1.57079632679f, "a013_000000");
+            check(close(rig.modelRotation(rig.mShield.get()) * osg::Vec3f(0, 0, 1), {-1, 0, 0}),
+                "walking shield guard lost the authored pose or actor-local yaw");
+        }
+        rig.mNativeShield->mRotation = osg::Quat(.42f, osg::Vec3f(0, 0, 1));
+        play(1.f);
+        rig.mNativeShield->mWriteRotation = false;
+        play(1.f);
+        rig.mAnimation->clear();
+        check(close(rig.mShield->mRotationScale.toOsgMatrix().getRotate(), rig.mNativeShield->mRotation),
+            "clearing shield guard retained its override on a translation-only native controller");
+        play(1.f);
+        rig.play("a000_000000", 0, 1, false, 0, {});
+        check(close(rig.mShield->mRotationScale.toOsgMatrix().getRotate(), rig.mNativeShield->mRotation),
+            "leaving guard failed to restore the native shield attachment");
+        play(1.f);
+        check(!rig.mAnimation->play("missing", 0.f, false, 1.f), "missing shield clip accepted");
+        check(close(rig.mShield->mRotationScale.toOsgMatrix().getRotate(), rig.mNativeShield->mRotation),
+            "missing clip left the shield attachment overridden");
+        shieldRelease(bank);
+    }
+
+    void shieldFallbacks()
+    {
+        for (bool axes : { false, true })
+        {
+            Rig rig(fixtureBank(axes), false, true);
+            check(rig.mAnimation->play("a000_000000", 0.f, true, 1.f, 0.f,
+                      "a000_000100", axes ? "a000_000100" : ""),
+                "native shield fallback clip rejected");
+            rig.update();
+            check(close(rig.mShield->mRotationScale.toOsgMatrix().getRotate(), rig.mNativeShield->mRotation),
+                "missing equipment axes or a two-handed weapon guard changed the shield attachment");
+        }
+        Rig shield(fixtureBank(), false, true);
+        check(shield.mAnimation->play("a000_000000", 0.f, true, 1.f, 0.f,
+                  "a015_000100", "a015_000100"),
+            "two-handed shield guard clip rejected");
+        shield.update();
+        check(close(shield.modelRotation(shield.mShield.get()) * osg::Vec3f(0, 0, 1), {0, 1, 0}),
+            "two-handed shield guard did not align its shield attachment");
+    }
+
     void fingerCurl(const std::shared_ptr<const EldenCombat::AnimationBank>& bank, std::string_view stance)
     {
         Rig rig(bank, false, true);
@@ -683,9 +966,8 @@ namespace
         }
     }
 
-    void swordSupportGrip()
+    void swordSupportGrip(const std::shared_ptr<const EldenCombat::AnimationBank>& bank = fixtureBank(true, true))
     {
-        const auto bank = fixtureBank();
         Rig rig(bank, false, true), reference(bank, false, true);
         const auto attachHandle = [](Rig& target, bool useGeode = true) {
             osg::ref_ptr<osg::Vec3Array> vertices = new osg::Vec3Array;
@@ -726,14 +1008,30 @@ namespace
         nativePalm = osg::Matrixf::transform3x3(nativePalm, osg::Matrixf::inverse(leftBind));
         const float nativePalmLength = (rig.modelMatrix(rig.mNodes.at("bip01 r finger2").get()).getTrans()
             - rightBind.getTrans()).length();
-        const float gripDistance = .196f * nativePalmLength / .08f;
+        std::vector<float> readySample;
+        bank->sample(*bank->find("a012_000000"), 0.f, false, readySample);
+        const auto position = [&](std::string_view joint) {
+            const auto offset = *bank->jointOffset(joint);
+            return osg::Vec3f(-readySample[offset], readySample[offset + 2], readySample[offset + 1]);
+        };
+        const auto axes = *bank->axesOffset("R_Weapon");
+        osg::Vec3f shaft(-readySample[axes + 3], readySample[axes + 5], readySample[axes + 4]);
+        shaft.normalize();
+        const float gripDistance = ((position("R_Weapon") - position("L_Weapon")) * shaft)
+            * nativePalmLength / (position("R_Finger2") - position("R_Hand")).length();
         std::vector<std::pair<osg::MatrixTransform*, osg::Vec3f>> translations;
         for (const auto& [name, node] : rig.mNodes)
-            translations.emplace_back(node.get(), node->getMatrix().getTrans());
-        const auto play = [](Rig& target, bool correction, std::string_view clip = "a012_000000",
+            if (name.find("upperarm") != std::string::npos || name.find("forearm") != std::string::npos
+                || name.find("hand") != std::string::npos || name.find("finger") != std::string::npos)
+                translations.emplace_back(node.get(), node->getMatrix().getTrans());
+        std::string_view sampledClip;
+        float sampledFrame = 0.f;
+        const auto play = [&](Rig& target, bool correction, std::string_view clip = "a012_000000",
                               bool loop = true, float duration = 1.f, std::string_view left = {},
-                              bool spear = false, float yaw = 0.f) {
-            check(target.mAnimation->play(clip, 0, loop, duration, yaw, left, {}, "a012_000000", spear, correction),
+                              bool spear = false, float yaw = 0.f, float frame = 0.f) {
+            sampledClip = clip;
+            sampledFrame = frame;
+            check(target.mAnimation->play(clip, frame, loop, duration, yaw, left, {}, "a012_000000", spear, correction),
                 "support grip fixture clip rejected");
             target.update();
         };
@@ -743,13 +1041,33 @@ namespace
             const float scale = osg::Matrixf::transform3x3(osg::Vec3f(0, 1, 0), weapon).length();
             return osg::Vec3f(.25f, -gripDistance / scale, .4f) * weapon;
         };
+        const auto checkContact = [&] {
+            const osg::Vec3f shoulder = rig.modelMatrix(rig.mNodes.at("bip01 l upperarm").get()).getTrans();
+            const osg::Vec3f elbow = rig.modelMatrix(rig.mNodes.at("bip01 l forearm").get()).getTrans();
+            const osg::Vec3f wrist = rig.modelMatrix(leftHand).getTrans();
+            const osg::Vec3f desiredWrist = contact()
+                - osg::Matrixf::transform3x3(nativePalm, rig.modelMatrix(leftHand));
+            const float upper = (elbow - shoulder).length();
+            const float lower = (wrist - elbow).length();
+            const float reach = (desiredWrist - shoulder).length();
+            // The deliberately short, asymmetric fixture arms cannot reach
+            // every real pose. Reachable handles must close exactly; others
+            // must stop at the closest reach boundary without stretching.
+            const float unavoidable = std::max({ 0.f, reach - upper - lower, std::abs(upper - lower) - reach });
+            if (std::abs((palm() - contact()).length() - unavoidable) >= 2e-4f)
+                std::cerr << "grip " << sampledClip << " frame " << sampledFrame << ": error "
+                          << (palm() - contact()).length() << " unavoidable " << unavoidable
+                          << " requested " << reach << " arm " << upper << '+' << lower << '\n';
+            check(std::abs((palm() - contact()).length() - unavoidable) < 2e-4f,
+                "supporting palm missed the reachable handle or nearest native arm reach");
+        };
         for (float yaw : { 0.f, 1.1f })
         {
             play(reference, false, "a012_000000", true, 1.f, {}, false, yaw);
             play(rig, false, "a012_000000", true, 1.f, {}, false, yaw);
             check((palm() - contact()).length() > .1f, "support grip fixture was already closed");
             play(rig, true, "a012_000000", true, 1.f, {}, false, yaw);
-            check(close(palm(), contact()), "supporting palm did not reach the visible sword handle");
+            checkContact();
             check(close(rig.modelRotation(leftHand), reference.modelRotation(reference.mNodes.at("bip01 l hand").get())),
                 "closing the supporting arm rotated its hand/finger curl");
             check(close(rig.modelMatrix(rig.mWeapon.get()).getTrans(), reference.modelMatrix(reference.mWeapon.get()).getTrans())
@@ -764,6 +1082,33 @@ namespace
             check(close(palm(), held), "repeated scene traversal accumulated a support correction");
         }
 
+        for (std::string_view clip : { "a012_020100", "a012_020200" })
+        {
+            const auto* gait = bank->find(clip);
+            check(gait != nullptr, "sword carry gait missing from bank");
+            for (float yaw : { 0.f, 1.1f })
+            {
+                for (float frame = 0; frame < gait->mFrames - 1; frame += .25f)
+                {
+                    play(reference, false, clip, true, 1.f, {}, false, yaw, frame);
+                    play(rig, true, clip, true, 1.f, {}, false, yaw, frame);
+                    checkContact();
+                    check(close(rig.modelRotation(leftHand),
+                              reference.modelRotation(reference.mNodes.at("bip01 l hand").get())),
+                        "running grip correction changed the supporting hand's orientation");
+                    check(close(rig.modelMatrix(rig.mWeapon.get()).getTrans(),
+                              reference.modelMatrix(reference.mWeapon.get()).getTrans())
+                            && close(rig.modelRotation(rig.mWeapon.get()), reference.modelRotation(reference.mWeapon.get())),
+                        "running grip correction changed the leading hand or sword");
+                    for (const auto& [node, translation] : translations)
+                        check(close(node->getMatrix().getTrans(), translation), "running grip changed native bone lengths");
+                    const osg::Vec3f held = palm();
+                    play(rig, true, clip, true, 0.f, {}, false, yaw, frame);
+                    check(close(palm(), held), "paused running grip accumulated another correction");
+                }
+            }
+        }
+
         // Native stance entry and action recovery must begin at the displayed
         // pose, including the corrected elbow, before advancing their fade.
         rig.mAnimation->clear();
@@ -771,12 +1116,13 @@ namespace
         const osg::Vec3f entry = palm();
         play(rig, true, "a012_000000", true, 0.f);
         check(close(palm(), entry), "entering sword ready snapped its supporting hand");
-        play(rig, true, "a012_000000", true, .1f);
+        const float halfReadyFade = bank->find("a012_000000")->mBlendFrames / 60.f;
+        play(rig, true, "a012_000000", true, halfReadyFade);
         const osg::Vec3f halfway = palm();
         play(rig, true, "a012_000000", true, 0.f);
         check(close(palm(), halfway), "paused ready fade changed its support solve");
-        play(rig, true, "a012_000000", true, .1f);
-        check(close(palm(), contact()), "ready fade did not complete its handle contact");
+        play(rig, true, "a012_000000", true, halfReadyFade);
+        checkContact();
         const osg::Vec3f ready = palm();
         play(rig, true, "a036_032505", false, 0.f);
         check(close(palm(), ready), "leaving sword ready discarded its displayed support pose");
@@ -790,17 +1136,23 @@ namespace
                  std::tuple{ "a013_000000", true, "", true },
              })
         {
-            play(rig, true, clip, loop, 1.f, layer, spear);
-            play(reference, false, clip, loop, 1.f, layer, spear);
+            // Separate fixtures keep the idle-layer clocks identical even
+            // when the real bank's carry clip has a breathing loop.
+            Rig scoped(bank, false, true), native(bank, false, true);
+            attachHandle(scoped);
+            attachHandle(native);
+            play(scoped, true, clip, loop, 1.f, layer, spear);
+            play(native, false, clip, loop, 1.f, layer, spear);
             for (const char* name : { "bip01 l upperarm", "bip01 l forearm", "bip01 l hand" })
-                check(close(rig.modelRotation(rig.mNodes.at(name).get()), reference.modelRotation(reference.mNodes.at(name).get()))
-                        && close(rig.modelMatrix(rig.mNodes.at(name).get()).getTrans(), reference.modelMatrix(reference.mNodes.at(name).get()).getTrans()),
-                    "sword support correction escaped its ready-stance scope");
+                check(close(scoped.modelRotation(scoped.mNodes.at(name).get()), native.modelRotation(native.mNodes.at(name).get()))
+                        && close(scoped.modelMatrix(scoped.mNodes.at(name).get()).getTrans(),
+                            native.modelMatrix(native.mNodes.at(name).get()).getTrans()),
+                    "sword support correction escaped its carry-pose scope");
         }
         rig.mWeapon->removeChildren(0, rig.mWeapon->getNumChildren());
         attachHandle(rig, false);
         play(rig, true);
-        check(close(palm(), contact()), "replacement NIF drawable did not refresh the supporting grip");
+        checkContact();
         rig.mWeapon->removeChildren(0, rig.mWeapon->getNumChildren());
         play(rig, true);
         play(reference, false);
@@ -813,6 +1165,8 @@ namespace
     {
         std::ifstream file(path, std::ios::binary);
         auto bank = std::make_shared<EldenCombat::AnimationBank>(file);
+        shieldGuard(bank, true);
+        swordSupportGrip(bank);
         for (const std::string_view stance : { "a000_000000", "a010_000000", "a012_000000", "a013_000000" })
             fingerCurl(bank, stance);
         Rig rig(bank);
@@ -860,6 +1214,9 @@ int main(int argc, char** argv)
     try
     {
         regression();
+        shieldGuard(fixtureBank());
+        bowAttachments(fixtureBank(true, true));
+        shieldFallbacks();
         humanoidCreatureRigs();
         upperBodyOverNativeLocomotion();
         poseBlending();
@@ -868,8 +1225,12 @@ int main(int argc, char** argv)
         fingerCurl(fixtureBank(), "a013_000000");
         swordSupportGrip();
         if (argc > 1)
+        {
             realClips(argv[1]);
-        std::cout << "Spear retarget validation passed: " << checks << " assertions\n";
+            std::ifstream input(argv[1], std::ios::binary);
+            bowAttachments(std::make_shared<EldenCombat::AnimationBank>(input));
+        }
+        std::cout << "Weapon attachment retarget validation passed: " << checks << " assertions\n";
     }
     catch (const std::exception& error)
     {

@@ -39,4 +39,4 @@ if ($sourceRoot.TrimEnd('\') -ine $DestinationDirectory.TrimEnd('\')) {
 & (Join-Path $DestinationDirectory 'CI\eldenring-build-windows.ps1') `
     -InstallDirectory $PackageDirectory -MorrowindDirectory $MorrowindDirectory -Jobs $Jobs
 Write-Host "Updated package: $PackageDirectory"
-Write-Host 'Open the launcher, then Settings > Gameplay > Elden Ring regional and boss music to enable the imported tracks.'
+Write-Host 'Open the launcher to adjust display, graphics, gameplay and music settings.'

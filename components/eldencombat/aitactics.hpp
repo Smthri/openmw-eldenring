@@ -5,6 +5,12 @@
 
 namespace EldenCombat
 {
+    // A melee windup can start while the actor is still turning toward a
+    // nearby target. Actual contact, including its narrower cone, stays native.
+    bool meleeAttackFacing(float actorYaw, float targetYaw);
+    // Native spells/projectiles keep aiming during windup and may still miss.
+    bool rangedAttackFacing(float actorYaw, float targetYaw, float actorPitch, float targetPitch);
+
     enum class AiAttackButton
     {
         Light,

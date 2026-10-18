@@ -1,11 +1,14 @@
 #ifndef OPENMW_MWPHYSICS_ACTOR_H
 #define OPENMW_MWPHYSICS_ACTOR_H
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <utility>
 
 #include "ptrholder.hpp"
+#include "actorpassthrough.hpp"
 
 #include <components/detournavigator/collisionshapetype.hpp>
 #include <components/eldencombat/landingmovement.hpp>
@@ -122,6 +125,17 @@ namespace MWPhysics
         void setLandingMovement(const EldenCombat::LandingMovement& movement, std::uint64_t generation);
         void clearLandingMovement();
 
+        std::uint64_t getCollisionId() const { return mCollisionId; }
+        std::uint64_t getPassThroughPlayerId() const { return mPassThroughPlayerId.load(std::memory_order_relaxed); }
+        void setPassThroughPlayerId(std::uint64_t player) { mPassThroughPlayerId.store(player, std::memory_order_relaxed); }
+        void getActorPassThrough(ActorPassThrough& state, std::uint64_t& generation) const;
+        bool setActorPassThrough(const ActorPassThrough& state, std::uint64_t generation);
+        void clearActorPassThrough();
+
+        // Main-thread input handoff, consumed alongside the queued velocity.
+        void setMovementIntent(bool value) { mMovementIntent = value; }
+        bool consumeMovementIntent() { return std::exchange(mMovementIntent, false); }
+
         void setOnGround(bool grounded);
 
         bool getOnGround() const { return mOnGround; }
@@ -153,7 +167,11 @@ namespace MWPhysics
         void setActive(bool value)
         {
             if (mActive && !value)
+            {
                 clearLandingMovement();
+                clearActorPassThrough();
+                setPassThroughPlayerId(0);
+            }
             mActive = value;
         }
 
@@ -196,6 +214,11 @@ namespace MWPhysics
         osg::Vec3f mForce;
         EldenCombat::LandingMovement mLandingMovement;
         std::uint64_t mLandingMovementGeneration = 0;
+        const std::uint64_t mCollisionId;
+        std::atomic<std::uint64_t> mPassThroughPlayerId{ 0 };
+        ActorPassThrough mActorPassThrough;
+        std::uint64_t mActorPassThroughGeneration = 0;
+        bool mMovementIntent = false;
         bool mOnGround;
         bool mOnSlope;
         bool mInternalCollisionMode;

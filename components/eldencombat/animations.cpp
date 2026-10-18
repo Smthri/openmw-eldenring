@@ -12,6 +12,11 @@
 
 namespace EldenCombat
 {
+    bool locomotionNeedsCarry(std::string_view stance, std::string_view locomotion, bool twoHanded)
+    {
+        return !twoHanded && !stance.empty() && stance.substr(0, 4) != locomotion.substr(0, 4);
+    }
+
     LocomotionAnimation locomotionAnimation(
         float moveX, float moveY, bool crouching, bool running, bool sprinting, bool turnToMovement)
     {

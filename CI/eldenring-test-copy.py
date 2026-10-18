@@ -215,6 +215,10 @@ class SourceCopy(unittest.TestCase):
                      self.animation_bank(missing={"a023_031070"}),
                      self.animation_bank(missing={"a023_031071"}),
                      self.animation_bank(missing={"a000_050170"}),
+                     self.animation_bank(missing={"a044_036010"}),
+                     self.animation_bank(missing={"a044_036020"}),
+                     self.animation_bank(missing={"a044_036000"}),
+                     self.animation_bank(missing={"a014_020200"}),
                      b"ERAN truncated bank"):
             with self.subTest(bytes=len(bank)):
                 self.animation.write_bytes(bank)

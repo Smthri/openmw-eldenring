@@ -25,7 +25,8 @@ class AnimationInstallation(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.header = self.root / "imported_timings.hpp"
-        self.header.write_text('result.mAnimation = "a001_003000";\nreturn twoHanded ? 10u : 0u;', encoding="utf-8")
+        self.header.write_text('result.mAnimation = "a001_003000";\nreturn twoHanded ? 10u : 0u;\n'
+                               'return twoHanded ? 12u : 2u;\nreturn twoHanded ? 13u : 3u;', encoding="utf-8")
         self.clips = installer.required_clips(self.header)
         self.source = self.root / "player_anims.bin"
         self.package = self.root / "пакет OpenMW"
@@ -106,12 +107,37 @@ class AnimationInstallation(unittest.TestCase):
         self.assertEqual(self.destination.read_bytes(), original)
         self.assertFalse(self.backups.exists())
 
+    def test_missing_one_handed_gait_preserves_installed_bank(self):
+        self.install()
+        original = self.destination.read_bytes()
+        for stance in (2, 3):
+            for animation in installer.LOCOMOTION:
+                name = f"a{stance:03}_{animation:06}"
+                with self.subTest(clip=name):
+                    self.assertIn(name, self.clips)
+                    self.source.write_bytes(self.bank(clips=self.clips - {name}))
+                    with self.assertRaisesRegex(ValueError, "missing 1 required clips"):
+                        self.install()
+                    self.assertEqual(self.destination.read_bytes(), original)
+                    self.assertFalse(self.backups.exists())
+
     def test_missing_incantation_phase_preserves_installed_bank(self):
         # Copied Windows trees have only the bank and imported header. They
         # must reject old banks even without the recreation's clip inventory.
         self.install()
         original = self.destination.read_bytes()
         for name in installer.SPELL_ANIMATIONS:
+            with self.subTest(clip=name):
+                self.source.write_bytes(self.bank(clips=self.clips - {name}))
+                with self.assertRaisesRegex(ValueError, "missing 1 required clips"):
+                    self.install()
+                self.assertEqual(self.destination.read_bytes(), original)
+                self.assertFalse(self.backups.exists())
+
+    def test_missing_bow_phase_or_carry_preserves_installed_bank(self):
+        self.install()
+        original = self.destination.read_bytes()
+        for name in installer.BOW_ANIMATIONS:
             with self.subTest(clip=name):
                 self.source.write_bytes(self.bank(clips=self.clips - {name}))
                 with self.assertRaisesRegex(ValueError, "missing 1 required clips"):

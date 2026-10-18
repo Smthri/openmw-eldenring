@@ -212,6 +212,27 @@ namespace
             }
         }
     }
+
+    void locomotionCarry()
+    {
+        using EldenCombat::locomotionNeedsCarry;
+        for (const auto* gait : { "a000_020000", "a000_020100", "a000_020200", "a000_320100" })
+            check(!locomotionNeedsCarry("a000_000000", gait, false),
+                "ordinary one-handed weapon suppresses the gait's moving right arm");
+        for (const auto* gait : { "a002_020000", "a002_020103", "a002_020200" })
+            check(!locomotionNeedsCarry("a002_000000", gait, false),
+                "heavy one-handed weapon suppresses its own gait's moving right arm");
+        check(!locomotionNeedsCarry("a003_000000", "a003_020100", false),
+            "one-handed spear suppresses its own gait's moving right arm");
+        check(locomotionNeedsCarry("a002_000000", "a000_020100", false),
+            "missing heavy-weapon gait loses its fallback carry");
+        check(locomotionNeedsCarry("a003_000000", "a000_320100", false),
+            "crouched spear loses its special carry");
+        check(!locomotionNeedsCarry("a012_000000", "a000_320100", true)
+                && !locomotionNeedsCarry("a012_000000", "a012_020100", true),
+            "two-handed movement unexpectedly receives a one-handed carry");
+        check(!locomotionNeedsCarry({}, "a000_020100", false), "unequipped movement receives a carry");
+    }
 }
 
 int main(int argc, char** argv)
@@ -221,6 +242,7 @@ int main(int argc, char** argv)
         sampling();
         malformed();
         locomotionFacing();
+        locomotionCarry();
         std::cout << "Elden animation bank, sampling and locomotion-facing tests passed\n";
         if (argc > 1)
         {

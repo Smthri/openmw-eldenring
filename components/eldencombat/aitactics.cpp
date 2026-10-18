@@ -33,6 +33,24 @@ namespace EldenCombat
         }
     }
 
+    bool meleeAttackFacing(float actorYaw, float targetYaw)
+    {
+        if (!std::isfinite(actorYaw) || !std::isfinite(targetYaw))
+            return false;
+        constexpr float pi = 3.14159265358979323846f;
+        return std::abs(std::remainder(targetYaw - actorYaw, 2.f * pi)) <= pi / 3.f;
+    }
+
+    bool rangedAttackFacing(float actorYaw, float targetYaw, float actorPitch, float targetPitch)
+    {
+        if (!std::isfinite(actorYaw) || !std::isfinite(targetYaw)
+            || !std::isfinite(actorPitch) || !std::isfinite(targetPitch))
+            return false;
+        constexpr float pi = 3.14159265358979323846f;
+        return std::abs(std::remainder(targetYaw - actorYaw, 2.f * pi)) <= pi / 6.f
+            && std::abs(std::remainder(targetPitch - actorPitch, 2.f * pi)) <= pi / 6.f;
+    }
+
     void AiTactics::reset()
     {
         *this = AiTactics();

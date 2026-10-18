@@ -18,6 +18,10 @@ one-/two-handed stance categories. animations.cpp reads the local ERAN bank
 from the recreation's tools/bake_anims.py, validates its layout and samples
 the original 30-fps model-space joint positions and oriented joint axes.
 The engine shares this immutable bank and retargets poses onto actor skeletons.
+One- and two-handed stance gait clips are baked, including one-handed heavy and
+spear carries. locomotionNeedsCarry() requests an idle arm overlay only when a
+one-handed gait falls back to a different category, preserving authored arm
+motion in the weapon's own walk/run/sprint loops.
 Roll/backstep costs, known roll distances/i-frame lengths, the normalized
 stamina estimates, guard raise delay and counter window come from the supplied
 code/tests. Light/heavy motion values and the default light chain are retained
@@ -47,13 +51,30 @@ the component receives engine decisions instead of embedding a second world.
 Adapter contract:
   1. Configure equipment/load/guard eligibility and setVitals(current,max).
      Costs and regeneration scale by max/100 so the native fatigue bar is used.
+     For a native creature swing, optionally supply mNativeAttack before update:
+     its group name, duration and impact frame are read from native text keys.
+     The action captures these values in mNativeAnimation and its definition;
+     later configuration changes cannot retime the active swing. The native
+     definition has one impact, full recovery before cancellation, no imported
+     root movement or charge/release restart. Invalid timing falls back to the
+     existing definition. No native option preserves the imported action path.
   2. Call update(input,seconds) once per simulation update and copy stamina()
      back to native fatigue. Clear Input edges after the update. Native fatigue
      regeneration/drain must be suppressed when this controller owns fatigue.
+     Set mFlying for controlled levitation separately from true mGrounded
+     contact. Flight permits ordinary melee chains, guarding and regeneration,
+     while preventing new jumps, dodges, sprinting and combat root displacement.
+     Existing jumps and airborne swings finish without waiting for touchdown;
+     an imported aerial swing retains its hits and prepaid stamina while it
+     advances to recovery at the end of its airborne phase.
   3. Use Update action flags and definition() to drive animation.
      An imported definition's mAnimation names the ERAN clip. Sample it at
      frame()*mAnimationSpeed: imported weapon timings have been divided by
      weapon speed, and this factor restores the original authored frame.
+     A nonempty mNativeAnimation instead selects the captured native group at
+     native speed. Synchronize that track to frame()/30 after update; a new
+     action may have started partway through a slow update. Keep native melee
+     hit callbacks suppressed, since activeHit() owns its single impact too.
      Jump-attack landing changes the definition and resets its frame without
      starting a new attack sequence. Sample the current definition each update
      so the airborne clip gives way to the full or short landing recovery.
@@ -101,6 +122,44 @@ values and contact geometry remain OpenMW adaptations. The baked animation
 bank contains no replacement character mesh; the renderer uses the actor's
 existing skeleton and equipment. Without usable bank/skeleton data, visual
 playback falls back to the native clips.
+The engine adapter also leaves Almalexia on native poses and movement outside
+combat so her Tribunal speech retains its authored idle pacing; her AI combat
+sequence enables the controller and imported poses for the duel.
+
+spellcasting.hpp selects imported gestures from a captured native range and
+semantic effect classification: restoration, area restoration, support, spectral,
+fire, frost and shock. The engine adapter chooses the highest-cost effect within
+the first effect's native range at cast start, for spells and activated enchanted
+items alike. Native text keys own release/consumption; the helper only fits the
+preparation and release/recovery poses to that timeline. Missing source phases
+or invalid native keys request native fallback. Moving/first-person casts use
+upper-body poses. Actual-bank checks live in CI/eldenring-test-spellcasting.cpp.
+
+Optional poise is separate from stance-break vulnerability and never absorbs
+health damage. The world adapter computes non-player resistance from modified
+Endurance/Strength plus NPC armor or creature maximum health/level; the pure
+poiseFromStats helper caps the baseline at 45. A positive mMaximumPoise lets
+weak hits reduce stance/poise while preserving the current action, buffered
+requests and pending contacts. Depletion, explicit knockdown or criticals
+interrupt; stance breaks retain their existing independent threshold. Poise
+refills after mPoiseRecoveryDelay without damage and on ordinary stagger;
+configure preserves its remaining fraction, so frame-by-frame native config
+updates cannot replenish it. A zero maximum retains prior hit reactions.
+
+mDodgeStaminaMultiplier scales start costs for rolls, crouch rolls and backsteps
+once when selecting either imported or fallback definitions. Zero allows a
+free dodge at zero stamina; other costs, geometry and timing stay unchanged.
+The native adapter exposes poise and dodge controls through launcher settings.
+
+AiTactics::update still owns finite chains and recovery pauses. The native AI
+uses meleeAttackFacing for a 60-degree windup cone independent of smooth-turn
+completion, so continuous circling cannot starve attacks merely by staying
+outside the native 3-degree steering tolerance. Native reach, height, visibility
+and hit-contact geometry remain authoritative. aitests.cpp simulates circling
+at 30/60/144 fps in both directions with fallback and imported controller data.
+Native spell/projectile windups use rangedAttackFacing (30-degree yaw/pitch
+cone); native charge release and cooldown keep advancing during turning.
+Engine projectile aim/release/consumption and the setting-off path stay native.
 
 All timing uses animation frames at 30 fps. update subdivides positive time
 into at most 1/60-second slices and caps one update at one second to avoid huge
@@ -115,3 +174,11 @@ Standalone checks (no OpenMW dependencies):
 The CMake eldencombat-imported-tests executable also accepts a local animation
 bank path to check that every imported action and weapon idle/guard stance
 references a clip present in that bank.
+
+Bow poses use bow.hpp to fit the imported longbow draw/held/release sequence
+to native shoot text keys. The helper distinguishes a continuous release
+section from a separate follow-through section, validates all required keys
+and clip lengths, and leaves native arrow release, ammo, strength and damage
+to OpenMW. Native bows select the a014 carry stance independently of melee
+weapon classes. The eldenbow suite covers the phase mapping and accepts a
+local player_anims.bin for actual source-pose checks.

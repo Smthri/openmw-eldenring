@@ -189,6 +189,7 @@ namespace
                 frameData.mRotation = osg::Vec2f(rotation.x(), rotation.z());
                 frameData.mInertia = actor->getInertialForce();
                 actor->getLandingMovement(frameData.mLandingMovement, frameData.mLandingMovementGeneration);
+                actor->getActorPassThrough(frameData.mActorPassThrough, frameData.mActorPassThroughGeneration);
                 if (frameData.mPreserveLandingMomentum)
                 {
                     // The constructor runs before the preceding async batch
@@ -262,7 +263,7 @@ namespace
             const bool mAdvanceSimulation;
             const float mTimeAccum;
             const float mPhysicsDt;
-            const MWPhysics::PhysicsTaskScheduler* scheduler;
+            MWPhysics::PhysicsTaskScheduler* scheduler;
             void operator()(MWPhysics::ActorSimulation& sim) const
             {
                 auto locked = sim.lock();
@@ -303,6 +304,8 @@ namespace
                     actor->setWalkingOnWater(frameData.mWalkingOnWater);
                     actor->setInertialForce(frameData.mInertia);
                     actor->setLandingMovement(frameData.mLandingMovement, frameData.mLandingMovementGeneration);
+                    if (frameData.mIsPlayer)
+                        scheduler->syncActorPassThrough(*actor, frameData);
                 }
             }
             void operator()(MWPhysics::ProjectileSimulation& sim) const
@@ -673,6 +676,7 @@ namespace MWPhysics
     {
         MaybeExclusiveLock lock(mCollisionWorldMutex, mLockingPolicy);
         mCollisionObjects.erase(collisionObject);
+        mPassThroughActors.erase(collisionObject);
         mCollisionWorld->removeCollisionObject(collisionObject);
     }
 
@@ -898,6 +902,68 @@ namespace MWPhysics
             std::visit(vis, sim);
         mSimulations->clear();
         mSimulations = nullptr;
+    }
+
+    void PhysicsTaskScheduler::syncActorPassThrough(Actor& player, const ActorFrameData& frameData)
+    {
+        // This runs on the main thread after the entire previous worker batch
+        // finishes. A teleport/reset invalidates the result's generation.
+        const bool current = player.setActorPassThrough(frameData.mActorPassThrough, frameData.mActorPassThroughGeneration);
+        const bool enabled = player.isActive() && player.getCollisionMode()
+            && !player.getPtr().getClass().getCreatureStats(player.getPtr()).isDead();
+        const std::uint64_t ready = enabled && current ? frameData.mActorPassThrough.readyActor() : 0;
+        if (ready == 0 && mPassThroughActors.empty())
+            return;
+
+        MaybeExclusiveLock lock(mCollisionWorldMutex, mLockingPolicy);
+        const auto* playerObject = player.getCollisionObject();
+        btVector3 playerMin, playerMax;
+        playerObject->getCollisionShape()->getAabb(playerObject->getWorldTransform(), playerMin, playerMax);
+        const auto bounds = [](const btVector3& value) {
+            return std::array<float, 3>{ static_cast<float>(value.x()), static_cast<float>(value.y()),
+                static_cast<float>(value.z()) };
+        };
+        const auto separated = [&](const btCollisionObject* object) {
+            btVector3 otherMin, otherMax;
+            object->getCollisionShape()->getAabb(object->getWorldTransform(), otherMin, otherMax);
+            return separatedActorBounds(bounds(playerMin), bounds(playerMax), bounds(otherMin), bounds(otherMax));
+        };
+
+        // Keep every active pair until safely clear, including when the player
+        // stops inside one actor and starts pushing a second one in a crowd.
+        for (auto it = mPassThroughActors.begin(); it != mPassThroughActors.end();)
+        {
+            auto* actor = static_cast<Actor*>((*it)->getUserPointer());
+            if (!enabled || actor->getPassThroughPlayerId() != player.getCollisionId() || separated(*it))
+            {
+                actor->setPassThroughPlayerId(0);
+                it = mPassThroughActors.erase(it);
+            }
+            else
+                ++it;
+        }
+
+        if (ready == 0)
+            return;
+
+        // Resolve a runtime identity only when its delay expires. Removed actors
+        // cannot be dereferenced or confused with newly allocated bodies.
+        for (const btCollisionObject* object : mCollisionObjects)
+        {
+            const auto* proxy = object->getBroadphaseHandle();
+            if (proxy->m_collisionFilterGroup != CollisionType_Actor
+                || !(proxy->m_collisionFilterMask & CollisionType_Actor) || object == playerObject)
+                continue;
+            auto* actor = static_cast<Actor*>(object->getUserPointer());
+            if (actor->getCollisionId() != ready)
+                continue;
+            if (!separated(object))
+            {
+                actor->setPassThroughPlayerId(player.getCollisionId());
+                mPassThroughActors.insert(object);
+            }
+            break;
+        }
     }
 
     // Attempt to acquire unique lock on mSimulationMutex while not all worker

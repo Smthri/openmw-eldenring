@@ -42,6 +42,18 @@ SPELL_ANIMATIONS = {
     "a433_045000", "a433_045010",  # Urgent Heal: self
     "a506_045000", "a506_045010",  # Catch Flame: touch
     "a417_045000", "a417_045011",  # Flame Sling: target
+    "a426_045000", "a426_045010",  # Shadow Bait / Darkness: conjuration and utility
+    "a431_045000", "a431_045010",  # Flame, Grant Me Strength: fortification
+    "a434_045000", "a434_045011",  # Heal: area restoration
+    "a436_045000", "a436_045011",  # Lightning Spear: shock projectile
+}
+# Native bows use the longbow's draw/held-aim/release phases and a014 carry.
+# They are outside imported_timings.hpp, which contains melee actions only.
+BOW_ANIMATIONS = {
+    "a044_036010", "a044_036020", "a044_036000",
+    *(f"a014_{animation:06d}" for animation in (
+        0, *LOCOMOTION, 300000, *range(320000, 320004), *range(320100, 320104),
+        322100, 390000, 390001)),
 }
 
 
@@ -67,11 +79,10 @@ def required_clips(timings_header: Path) -> set[str]:
     stances = re.findall(r'\breturn\s+twoHanded\s*\?\s*(\d+)u\s*:\s*(\d+)u\s*;', source)
     if not actions or not stances:
         raise ValueError(f"no imported animation metadata in {timings_header}; regenerate the timing header first")
-    expected = actions | {f"a000_{animation:06d}" for animation in BASE_ANIMATIONS} | SPELL_ANIMATIONS
+    expected = actions | {f"a000_{animation:06d}" for animation in BASE_ANIMATIONS} | SPELL_ANIMATIONS | BOW_ANIMATIONS
     for two, one in stances:
         for stance in (int(one), int(two)):
-            expected.update(f"a{stance:03d}_{animation:06d}" for animation in (0, 100))
-        expected.update(f"a{int(two):03d}_{animation:06d}" for animation in LOCOMOTION)
+            expected.update(f"a{stance:03d}_{animation:06d}" for animation in (0, 100, *LOCOMOTION))
     return expected
 
 
@@ -96,6 +107,7 @@ def validate(source: Path, timings_header: Path, expected_hash: str | None = Non
         raise ValueError(f"animation bank is missing {len(missing)} required clips: {', '.join(missing[:12])}")
     report["required_clips"] = len(expected)
     report["spellcasting_clips"] = sorted(SPELL_ANIMATIONS)
+    report["bow_clips"] = sorted(BOW_ANIMATIONS)
     return report
 
 

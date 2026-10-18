@@ -448,6 +448,11 @@ namespace MWPhysics
         }
         else if (auto foundActor = mActors.find(ptr.mRef); foundActor != mActors.end())
         {
+            if (ptr == MWMechanics::getPlayer())
+            {
+                for (const auto& [_, actor] : mActors)
+                    actor->setPassThroughPlayerId(0);
+            }
             mActors.erase(foundActor);
         }
     }
@@ -493,6 +498,21 @@ namespace MWPhysics
         if (found != mActors.end())
             return found->second.get();
         return nullptr;
+    }
+
+    bool PhysicsSystem::isActorPassingThroughPlayer(const MWWorld::ConstPtr& ptr) const
+    {
+        const Actor* actor = getActor(ptr);
+        if (!actor || actor->getPassThroughPlayerId() == 0)
+            return false;
+        const Actor* player = getActor(MWMechanics::getPlayer());
+        return player && player->isActive() && actor->getPassThroughPlayerId() == player->getCollisionId();
+    }
+
+    void PhysicsSystem::setActorMovementIntent(const MWWorld::Ptr& ptr, bool moving)
+    {
+        if (Actor* actor = getActor(ptr))
+            actor->setMovementIntent(moving);
     }
 
     const Object* PhysicsSystem::getObject(const MWWorld::ConstPtr& ptr) const
@@ -553,6 +573,12 @@ namespace MWPhysics
         else if (auto foundActor = mActors.find(ptr.mRef); foundActor != mActors.end())
         {
             foundActor->second->updatePosition();
+            foundActor->second->setPassThroughPlayerId(0);
+            if (ptr == MWMechanics::getPlayer())
+            {
+                for (const auto& [_, actor] : mActors)
+                    actor->setPassThroughPlayerId(0);
+            }
             mTaskScheduler->updateSingleAabb(foundActor->second, true);
         }
     }
@@ -617,6 +643,8 @@ namespace MWPhysics
             bool cmode = found->second->getCollisionMode();
             cmode = !cmode;
             found->second->enableCollisionMode(cmode);
+            for (const auto& [_, actor] : mActors)
+                actor->setPassThroughPlayerId(0);
             // NB: Collision body isn't disabled for vanilla TCL compatibility
             return cmode;
         }
@@ -638,6 +666,8 @@ namespace MWPhysics
             actor->setVelocity(osg::Vec3f());
             actor->setInertialForce(osg::Vec3f());
             actor->clearLandingMovement();
+            actor->clearActorPassThrough();
+            actor->setPassThroughPlayerId(0);
         }
     }
 
@@ -913,6 +943,8 @@ namespace MWPhysics
         , mSkipCollisionDetection(!actor.getCollisionMode())
         , mIsPlayer(isPlayer)
         , mPreserveLandingMomentum(preserveLandingMomentum)
+        , mHasMovementIntent(actor.consumeMovementIntent() && isPlayer && !inert
+              && !actor.getPtr().getClass().getCreatureStats(actor.getPtr()).getKnockedDown())
     {
     }
 

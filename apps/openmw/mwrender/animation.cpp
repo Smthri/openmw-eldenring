@@ -1597,6 +1597,7 @@ namespace MWRender
     void Animation::setObjectRoot(const std::string& model, bool forceskeleton, bool baseonly, bool isCreature)
     {
         mEldenAnimation.reset();
+        mEldenBowAnimation = false;
         mEldenAnimationBank.reset();
         osg::ref_ptr<osg::StateSet> previousStateset;
         if (mObjectRoot)
@@ -1712,8 +1713,13 @@ namespace MWRender
         // Bipedal creatures can share the NPC rig (skeletons, dremora, saints,
         // etc.). Require a complete humanoid body for them; the NPC adapter
         // also supports the deliberately incomplete first-person skeleton.
+        // Both Tribunal Almalexia records omit the Bipedal flag despite using
+        // complete humanoid NIF rigs. Let their actual bones determine support;
+        // the mechanics adapter retains native poses outside combat.
+        const ESM::RefId actorId = mPtr.getCellRef().getRefId();
+        const bool almalexia = actorId == "almalexia" || actorId == "almalexia_warrior";
         const bool humanoid = mPtr.getClass().isNpc()
-            || (isCreature && mPtr.getClass().isBipedal(mPtr));
+            || (isCreature && (mPtr.getClass().isBipedal(mPtr) || almalexia));
         if (Settings::game().mEldenRingCombat && humanoid && !mRequiresBoneMap)
         {
             mEldenAnimationBank = getEldenAnimationBank(mResourceSystem->getVFS());
@@ -1728,7 +1734,7 @@ namespace MWRender
     }
 
     bool Animation::playEldenAnimation(std::string_view clip, float frame, bool loop, float duration, float yaw,
-        std::string_view leftArm, std::string_view rightArm, std::string_view grip, bool upperBodyOnly)
+        std::string_view leftArm, std::string_view rightArm, std::string_view grip, bool upperBodyOnly, bool bow, float bowDraw)
     {
         if (mEldenAnimation)
         {
@@ -1737,8 +1743,12 @@ namespace MWRender
                 MWMechanics::getActiveWeapon(mPtr, &weaponType);
             if (mEldenAnimation->play(clip, frame, loop, duration, yaw, leftArm, rightArm, grip,
                     weaponType == ESM::WeaponType::SpearTwoWide, weaponType == ESM::WeaponType::LongBladeTwoHand,
-                    upperBodyOnly))
+                    upperBodyOnly, bow,
+                    (mPtr.getRefData().getPosition().rot[0] + getBodyPitchRadians()) * getPitchFactor(), bowDraw))
+            {
+                mEldenBowAnimation = bow;
                 return true;
+            }
         }
         clearEldenAnimation();
         return false;
@@ -1746,6 +1756,7 @@ namespace MWRender
 
     void Animation::clearEldenAnimation()
     {
+        mEldenBowAnimation = false;
         if (mEldenAnimation)
             mEldenAnimation->clear();
     }

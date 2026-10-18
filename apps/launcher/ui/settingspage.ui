@@ -471,6 +471,121 @@
             </widget>
            </item>
            <item>
+            <widget class="QGroupBox" name="eldenCombatEnemyPoiseGroupBox">
+             <property name="toolTip">
+              <string>Give enemies stagger resistance based on their native stats and armor. Weak enemies still stagger normally. Requires Elden combat to be enabled.</string>
+             </property>
+             <property name="title">
+              <string>Elden combat enemy poise</string>
+             </property>
+             <property name="checkable">
+              <bool>true</bool>
+             </property>
+             <layout class="QGridLayout" name="eldenCombatEnemyPoiseLayout">
+              <item row="0" column="0" colspan="4">
+               <widget class="QLabel" name="eldenEnemyPoiseDescriptionLabel">
+                <property name="text">
+                 <string>Stronger enemies can withstand some hits before staggering. Repeated or heavy hits wear down their poise. Health damage and the player's stagger resistance are unchanged.</string>
+                </property>
+                <property name="wordWrap">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="eldenEnemyPoiseMultiplierLabel">
+                <property name="text">
+                 <string>Poise strength</string>
+                </property>
+                <property name="buddy">
+                 <cstring>eldenEnemyPoiseMultiplierSpinBox</cstring>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QDoubleSpinBox" name="eldenEnemyPoiseMultiplierSpinBox">
+                <property name="toolTip">
+                 <string>Multiply enemy stagger resistance. 1 uses the default strength; lower values make enemies easier to stagger. 0 disables poise.</string>
+                </property>
+                <property name="suffix">
+                 <string>×</string>
+                </property>
+                <property name="maximum">
+                 <double>3.000000000000000</double>
+                </property>
+                <property name="singleStep">
+                 <double>0.100000000000000</double>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="2">
+               <widget class="QLabel" name="eldenEnemyPoiseRecoveryDelayLabel">
+                <property name="text">
+                 <string>Recovery delay</string>
+                </property>
+                <property name="buddy">
+                 <cstring>eldenEnemyPoiseRecoveryDelaySpinBox</cstring>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="3">
+               <widget class="QDoubleSpinBox" name="eldenEnemyPoiseRecoveryDelaySpinBox">
+                <property name="toolTip">
+                 <string>Time without a hit before enemy poise fully recovers. Increase this to make successive hits more effective at staggering enemies.</string>
+                </property>
+                <property name="suffix">
+                 <string> s</string>
+                </property>
+                <property name="minimum">
+                 <double>0.250000000000000</double>
+                </property>
+                <property name="maximum">
+                 <double>10.000000000000000</double>
+                </property>
+                <property name="singleStep">
+                 <double>0.250000000000000</double>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="eldenCombatDodgeStaminaGroupBox">
+             <property name="title">
+              <string>Elden combat dodge stamina</string>
+             </property>
+             <layout class="QFormLayout" name="eldenCombatDodgeStaminaLayout">
+              <item row="0" column="0">
+               <widget class="QLabel" name="eldenDodgeStaminaMultiplierLabel">
+                <property name="text">
+                 <string>Dodge stamina cost</string>
+                </property>
+                <property name="buddy">
+                 <cstring>eldenDodgeStaminaMultiplierSpinBox</cstring>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QDoubleSpinBox" name="eldenDodgeStaminaMultiplierSpinBox">
+                <property name="toolTip">
+                 <string>Stamina cost of rolls, crouch rolls and backsteps for all characters using Elden combat. 100% preserves the standard costs; 0% makes dodges free. Applies even when equipped-weight roll distances are disabled.</string>
+                </property>
+                <property name="suffix">
+                 <string>%</string>
+                </property>
+                <property name="maximum">
+                 <double>300.000000000000000</double>
+                </property>
+                <property name="singleStep">
+                 <double>5.000000000000000</double>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
             <widget class="QGroupBox" name="eldenCombatRollGroupBox">
              <property name="toolTip">
               <string>Enable equipped-weight roll distances for characters using Elden combat. Uncheck to restore legacy roll distances. Timing, invincibility and backsteps are unchanged.</string>

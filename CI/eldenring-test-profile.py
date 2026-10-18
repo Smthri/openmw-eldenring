@@ -56,7 +56,11 @@ class ProfileConfiguration(unittest.TestCase):
         self.config.write_bytes(custom)
         files = {
             "settings.cfg": (b"[Video]\nresolution x = 1920\n"
-                             b"[Sound]\nmaster volume = 0.8\nmusic volume = 0.6\ndevice = Custom device\n"),
+                             b"[Sound]\nmaster volume = 0.8\nmusic volume = 0.6\ndevice = Custom device\n"
+                             b"[Game]\nelden ring enemy poise = false\n"
+                             b"elden ring enemy poise multiplier = 0.75\n"
+                             b"elden ring enemy poise recovery delay = 4.5\n"
+                             b"elden ring dodge stamina multiplier = 0.6\n"),
             "input_v3.xml": b"custom bindings",
             "user-data/saves/character/slot.omwsave": b"existing save",
         }

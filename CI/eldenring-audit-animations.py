@@ -139,10 +139,8 @@ def expected_clips(recreation: Path) -> set[str]:
         expected.add(f"a{int(file[1:]):03d}_{animation:06d}")
     for one, two in stances:
         for stance in (one, two):
-            for animation in (0, 100):
+            for animation in (0, 100, *literals["STANCE_LOCOMOTION"]):
                 expected.add(f"a{stance:03d}_{animation:06d}")
-        for animation in literals["STANCE_LOCOMOTION"]:
-            expected.add(f"a{two:03d}_{animation:06d}")
     return expected
 
 
