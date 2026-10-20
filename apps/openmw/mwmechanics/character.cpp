@@ -2655,19 +2655,12 @@ namespace MWMechanics
             : EldenCombat::stanceAnimation(weapon, twoHanded, 0);
         const std::string grip = equipped && !bow ? stance : std::string{};
         const auto& gripTransition = stats.getEldenGripTransition();
+        EldenCombat::GripPose gripPose;
         if (equipped && gripTransition.active() && action == EldenCombat::Action::Idle)
         {
             const auto pose = gripTransition.pose();
             if (mAnimation->getEldenAnimationLength(pose.mAnimation) > 0.f)
-            {
-                mEldenLocomotion.reset();
-                mEldenIdleFacing.reset();
-                // These clips have their own authored left/right variants.
-                // Preserve native locomotion underneath the changing arms.
-                mAnimation->playEldenAnimation(pose.mAnimation, pose.mFrame, false, duration,
-                    0.f, {}, {}, grip, true);
-                return;
-            }
+                gripPose = pose;
         }
         const auto guard = mEldenMeleeActive
             ? EldenCombat::guardAnimation(weapon, twoHanded, action, combat.guarding())
@@ -2696,7 +2689,8 @@ namespace MWMechanics
             mEldenLocomotion.reset();
             mEldenIdleFacing.reset();
             mAnimation->playEldenAnimation(bow ? EldenCombat::BowIdleAnimation : "a000_202040",
-                mEldenPoseTime * EldenCombat::AnimationFps, true, duration, 0.f, {}, {}, grip, bow, bow);
+                mEldenPoseTime * EldenCombat::AnimationFps, true, duration, 0.f, {}, {}, grip, bow, bow,
+                0.f, gripPose.mAnimation, gripPose.mFrame);
             return;
         }
 
@@ -2750,7 +2744,10 @@ namespace MWMechanics
         if (!guard.mRightArm.empty())
             rightArm = guard.mRightArm;
         const bool upperBodyOnly = bow && mPtr == getPlayer() && MWBase::Environment::get().getWorld()->isFirstPerson();
-        mAnimation->playEldenAnimation(clip, frame, true, duration, yaw, guard.mLeftArm, rightArm, grip, upperBodyOnly, bow);
+        // Grip changes overlay only the authored arms. Keep the current gait,
+        // stride and remembered world heading throughout both swap phases.
+        mAnimation->playEldenAnimation(clip, frame, true, duration, yaw, guard.mLeftArm, rightArm, grip, upperBodyOnly, bow,
+            0.f, gripPose.mAnimation, gripPose.mFrame);
     }
 
     void CharacterController::hitEldenCombat()
@@ -2905,7 +2902,8 @@ namespace MWMechanics
             mEldenIdleFacing.reset();
             cls.getCreatureStats(mPtr).getEldenCombat().reset(true);
             cls.getCreatureStats(mPtr).getEldenBossArt().cancel();
-            cls.getCreatureStats(mPtr).getEldenCombatInput() = {};
+            cls.getCreatureStats(mPtr).getEldenGripTransition().reset();
+            cls.getCreatureStats(mPtr).getEldenCombatInput().resetKeepingGrip();
             mEldenJumpMovement.reset(cls.getMovementSettings(mPtr).mPosition[2]);
             cls.getCreatureStats(mPtr).setTeleported(false);
         }

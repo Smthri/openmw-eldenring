@@ -194,6 +194,7 @@ namespace MWRender
         MWWorld::Ptr mPtr;
         bool mShowWeapons = false;
         bool mShowCarriedLeft = true;
+        bool mEldenInventoryPreview = false;
         std::array<std::unique_ptr<PartHolder>, ESM::PRT_Count> mObjectParts;
         Ammunition mAmmunition;
         ESM::NPC npc;
@@ -356,6 +357,23 @@ int main()
             npc.updateParts();
             npc.showCarriedLeft(true);
             expect(npc.leftVisible() && npc.rightVisible(), "inventory preview cannot show equipped weapons");
+            npc.mEldenInventoryPreview = true;
+            for (const auto draw : { DrawState::Nothing, DrawState::Weapon })
+            {
+                npc.stats.draw = draw;
+                npc.stats.input = { true, false };
+                npc.showWeapons(true);
+                npc.updateParts();
+                expect(npc.rightVisible() && !npc.leftVisible(), "preview lost selected-right two-hand visibility");
+                npc.stats.input = { true, true };
+                npc.showWeapons(true);
+                npc.updateParts();
+                expect(!npc.rightVisible() && npc.leftVisible(), "preview lost selected-left two-hand visibility");
+                npc.stats.input = {};
+                npc.showWeapons(true);
+                npc.updateParts();
+                expect(npc.rightVisible() && npc.leftVisible(), "preview lost ordinary dual-wield visibility");
+            }
             NpcAnimation leftOnly;
             leftOnly.mViewMode = view;
             leftOnly.inventory.slots[MWWorld::InventoryStore::Slot_CarriedRight].type = 0;

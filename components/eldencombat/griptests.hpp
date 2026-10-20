@@ -15,6 +15,28 @@ namespace EldenCombat::Tests
             if (!value)
                 throw std::runtime_error(message);
         };
+        for (const Grip grip : { Grip::OneHand, Grip::TwoHandRight, Grip::TwoHandLeft })
+        {
+            Input input;
+            input.mTwoHanded = grip != Grip::OneHand;
+            input.mTwoHandedLeft = grip == Grip::TwoHandLeft;
+            input.mLight = input.mHeavy = input.mGuard = input.mDodge = input.mJump
+                = input.mCritical = input.mSpearThrust = { true, true, true };
+            input.mMoveX = .5f;
+            input.mMoveY = -.5f;
+            input.mDodgeDirection = std::array{ 1.f, 0.f };
+            input.mHandsBusy = input.mSprint = input.mLockedOn = input.mCriticalAvailable = input.mAIControlled = true;
+            input.resetKeepingGrip();
+            check(input.mTwoHanded == (grip != Grip::OneHand) && input.mTwoHandedLeft == (grip == Grip::TwoHandLeft),
+                "input reset lost the selected armament grip");
+            for (const Button button : { input.mLight, input.mHeavy, input.mGuard, input.mDodge, input.mJump,
+                     input.mCritical, input.mSpearThrust })
+                check(!button.mHeld && !button.mPressed && !button.mReleased,
+                    "input reset retained an action button");
+            check(input.mMoveX == 0.f && input.mMoveY == 0.f && !input.mDodgeDirection && !input.mHandsBusy
+                    && !input.mSprint && !input.mLockedOn && !input.mCriticalAvailable && !input.mAIControlled,
+                "input reset retained transient movement or action context");
+        }
         for (const Grip from : { Grip::OneHand, Grip::TwoHandRight, Grip::TwoHandLeft })
             for (const Grip to : { Grip::OneHand, Grip::TwoHandRight, Grip::TwoHandLeft })
             {

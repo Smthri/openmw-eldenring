@@ -60,6 +60,9 @@ namespace EldenCombat
         bool mAIControlled = false;
 
         void clearEdges();
+        // Input cancellation and cell transitions release controls, while the
+        // selected armament grip persists until equipment or the player changes it.
+        void resetKeepingGrip();
     };
 
     enum class Load

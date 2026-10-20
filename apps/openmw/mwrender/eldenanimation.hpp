@@ -33,7 +33,8 @@ namespace MWRender
             std::string_view leftArmClip = {}, std::string_view rightArmClip = {}, std::string_view gripClip = {},
             bool alignSpear = false, bool twoHandedSword = false, bool upperBodyOnly = false,
             bool bow = false, float pitch = 0.f, float bowDraw = 0.f, bool leftHanded = false,
-            bool offhandWeapon = false, bool offhandSpear = false);
+            bool offhandWeapon = false, bool offhandSpear = false, bool alignWeapon = false,
+            std::string_view gripChange = {}, float gripChangeFrame = 0.f);
         void clear();
 
         const ActiveControllersVector& controllers() const { return mControllers; }

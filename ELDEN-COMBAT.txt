@@ -5,6 +5,21 @@ OpenMW C++, using Morrowind health, fatigue, equipment, collision,
 damage callbacks, skills, enchantments and AI navigation. The Rust/Bevy program
 is a reference; it is not run as a second game process.
 
+Local map lighting
+
+Views that exclude point lighting, including the overhead local map, disable
+point-light shader reads as well as light-buffer setup. They keep their own
+sun/ambient lighting without reading the main camera's clustered light grid.
+Main-world and inventory-preview cameras retain their point lights. The EGL
+regression CI/eldenring-test-map-lighting.py renders the production vertex and
+fragment lighting paths with clustered and legacy lighting.
+
+Native creature health
+
+Staada uses native creature health initialization and saved health values.
+The combat-specific health multiplier, save-load upgrade and compensating
+poise adjustment have been removed. Existing saved stat overrides stay intact.
+
 Combat pursuit and obstacle recovery
 
 Stuck recovery retains each selected escape direction and cycles through the
@@ -154,6 +169,13 @@ them back to each displayed parent's local frame. Independently blending
 local rotations could compound arm twists during rolls and jumps, briefly
 turning the sword hand away from both endpoint poses. Native weapon attachment
 offsets and bone lengths are preserved.
+
+Before native tracks advance, bone callbacks restore the previous native pose.
+Imported playback keeps that pose separately from its displayed overrides;
+ending imported playback restores native rotations, translations and scales.
+Draw/sheath tracks and native blend origins therefore cannot inherit a partly
+retargeted skeleton. Right-hand short and long blades follow the authored weapon
+axes, retaining native attachment offsets and first-person aiming pitch.
 
 Movement-facing yaw is blended once for the whole pose, separately from the
 anatomical rotations. Reversing direction therefore turns the hips, torso,
@@ -1017,6 +1039,9 @@ Changing equipment, death or leaving melee cancels a pending change. Grip change
 do not refill fatigue or require a regenerated animation bank. Missing clips
 retain native poses. One-/two-handed attacks use their distinct imported action
 definitions, hit windows and playback speeds.
+The swap's timed arm layers retain the current gait and standing world heading.
+Entering another cell clears transient actions and cancels any pending swap,
+while preserving whichever grip has already been applied.
 Shared weapon poses are reflected for left-hand two-handed use, with the native
 left attachment and opposite source strafe to preserve travel direction. Shield
 and grip-change clips already authored for the left hand keep their original
@@ -1033,6 +1058,10 @@ Left weapons follow the native weapon attach/detach keys, so sheathing hides
 both weapons and drawing restores the off-hand weapon. Inventory refreshes
 cannot show a weapon while sheathed. Shields and torches retain their own
 visibility and optional shield-sheathing behavior.
+The inventory preview freezes the imported ready pose for the selected grip,
+including both off-hand attachment orientation and selected-hand visibility.
+It uses equipped slots even when the world actor has sheathed weapons.
+Missing banks or stance clips retain the native preview.
 
 Extracted hit records retain the source hand for each contact; paired sequences
 can strike left first or use the same hand twice. Airborne attacks retain all

@@ -56,6 +56,7 @@ namespace MWRender
         ViewMode mViewMode;
         bool mShowWeapons;
         bool mShowCarriedLeft;
+        bool mEldenInventoryPreview = false;
 
         enum NpcType
         {
@@ -145,6 +146,7 @@ namespace MWRender
 
         bool getWeaponsShown() const override { return mShowWeapons; }
         void showWeapons(bool showWeapon) override;
+        void setEldenInventoryPreview(bool enabled) { mEldenInventoryPreview = enabled; }
 
         bool updateCarriedLeftVisible(ESM::RefId weaptype) const override;
         bool getCarriedLeftShown() const override { return mShowCarriedLeft; }
