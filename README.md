@@ -41,10 +41,10 @@ You need **64-bit Windows 10 (1903 or newer) or Windows 11**, your own installed
 with the `py` launcher. Internet access is needed once to install two Python
 packages. Visual Studio, CMake, Git and Rust are not needed to install the release.
 
-1. Get **`OpenMW-EldenCombat-Windows-x64.zip`** and its matching **`.sha256`** file.
-   Published binaries belong on [this fork's Releases page](https://github.com/Smthri/openmw-eldenring/releases).
-   Until a release is published, use the supplied local release ZIP. GitHub's
-   **Source code** downloads are not compiled applications.
+1. Download the **[Windows x64 ZIP](https://github.com/Smthri/openmw-eldenring/releases/download/windows-x64-2026.10.20/OpenMW-EldenCombat-Windows-x64.zip)**
+   and its **[SHA-256 checksum](https://github.com/Smthri/openmw-eldenring/releases/download/windows-x64-2026.10.20/OpenMW-EldenCombat-Windows-x64.zip.sha256)**
+   from the [2026-10-20 release](https://github.com/Smthri/openmw-eldenring/releases/tag/windows-x64-2026.10.20).
+   GitHub's **Source code** downloads are not compiled applications.
 2. Right-click the ZIP, choose **Extract All**, and extract into a new writable
    folder, such as `Games\OpenMW-EldenCombat`. Keep all files together.
 3. Double-click **`Setup-EldenCombat.cmd`**. Select your Morrowind folder containing
@@ -63,6 +63,87 @@ timing table is compiled into the shared binary.
 
 For checksum verification, command-line setup, updates and building from source,
 see the [installation details](docs/eldenring-installation.md).
+
+The release was verified with a fresh native Windows installation, local asset
+import, launcher and game startup, relocation, and live player/NPC combat.
+The [matching source archive](https://github.com/Smthri/openmw-eldenring/releases/download/windows-x64-2026.10.20/OpenMW-EldenCombat-Source.zip)
+is included with the release.
+
+## Compile from source
+
+For 64-bit Windows. Linux/WSL instructions are [here](docs/eldenring-installation.md).
+
+### 1. Install the requirements
+
+- Morrowind and Elden Ring.
+- Git, **64-bit Python 3.10+** (including the `py` launcher), CMake 4.2+, and 7-Zip.
+- Visual Studio 2026 with **Desktop development with C++** and a Windows SDK.
+
+### 2. Download the fork
+
+Open a new PowerShell window in a folder where you want to keep the project:
+
+```powershell
+git clone --branch elden-combat https://github.com/Smthri/openmw-eldenring.git
+cd openmw-eldenring
+```
+
+Keep using this PowerShell window for the remaining steps. Run commands in order;
+if one fails, fix the error before continuing.
+
+### 3. Generate the game data
+
+Replace the two paths below with your installations. The Elden Ring path must
+end in `Game`; the Morrowind path must contain the `Data Files` folder.
+
+```powershell
+$env:ER_GAME_DIR = 'D:\Steam\steamapps\common\ELDEN RING\Game'
+$morrowind = 'D:\Steam\steamapps\common\Morrowind'
+
+py -3 -m venv .venv
+$python = Join-Path $PWD '.venv\Scripts\python.exe'
+& $python -m pip install cryptography zstandard
+& $python scripts/prepare_eldenring_reference.py
+
+git clone https://github.com/JKAnderson/BinderKeys.git build-tools-local/elden-assets/BinderKeys
+
+& $python scripts/unpack_eldenring_assets.py `
+  --game-dir $env:ER_GAME_DIR `
+  --keys-dir build-tools-local/elden-assets/BinderKeys/EldenRing_PC/Key `
+  --generate
+```
+
+This creates the animation bank automatically. No manual WitchyBND extraction,
+`.nif` conversion, or Rust installation is needed.
+
+For music and combat sounds, also run these optional commands before building:
+
+```powershell
+& $python scripts/import_eldenring_music.py --game-dir $env:ER_GAME_DIR
+& $python scripts/import_eldenring_sounds.py --game-dir $env:ER_GAME_DIR
+```
+
+### 4. Build and play
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\CI\eldenring-build-windows.ps1 `
+  -VisualStudioVersion 2026 `
+  -MorrowindDirectory $morrowind
+```
+
+Wait for it to finish successfully. It downloads dependencies, builds the fork,
+installs the generated assets, and sets up Morrowind automatically.
+
+Open `build-eldenring-package-x64`, then double-click:
+
+- **`Start-EldenCombat-Launcher.cmd`** to choose your resolution and settings.
+- **`Start-EldenCombat.cmd`** to play.
+
+If the launcher offers an installation wizard, click **Skip**; Morrowind is already configured.
+
+Keep the generated package and ZIP local: they contain your game-derived assets.
+For Linux/WSL, Visual Studio 2022, or other options, see the
+[installation details](docs/eldenring-installation.md).
 
 ## Enable music and use the controls
 
@@ -121,7 +202,7 @@ git diff --cached
 python3 CI/eldenring-audit-source.py
 ```
 
-After committing, run `python3 CI/eldenring-audit-source.py --base origin/master --revision HEAD`
+After committing, run `python3 CI/eldenring-audit-source.py --base f5e0fbe9fc --revision HEAD`
 to check every added or changed file version since the fork's upstream base,
 including files removed in later commits.
 
