@@ -334,6 +334,7 @@ namespace SceneUtil
         };
 
         std::unordered_map<osg::Camera*, ViewData> mCache;
+        osg::ref_ptr<osg::StateSet> mNoPointLightStateSet;
 
         const int mGridSizeX;
         const int mGridSizeY;

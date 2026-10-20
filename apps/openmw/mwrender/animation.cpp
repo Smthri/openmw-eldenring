@@ -1153,7 +1153,7 @@ namespace MWRender
 
         mActiveControllers.clear();
 
-        // Remove the previous spear attachment override before native keyframes
+        // Remove the previous imported pose and attachment overrides before native keyframes
         // evaluate, including tracks that animate only translation or scale.
         if (mEldenAnimation)
             for (const auto& [node, callback] : mEldenAnimation->beforeNativeControllers())
@@ -1752,7 +1752,8 @@ namespace MWRender
     }
 
     bool Animation::playEldenAnimation(std::string_view clip, float frame, bool loop, float duration, float yaw,
-        std::string_view leftArm, std::string_view rightArm, std::string_view grip, bool upperBodyOnly, bool bow, float bowDraw)
+        std::string_view leftArm, std::string_view rightArm, std::string_view grip, bool upperBodyOnly, bool bow, float bowDraw,
+        std::string_view gripChange, float gripChangeFrame)
     {
         if (mEldenAnimation)
         {
@@ -1780,13 +1781,22 @@ namespace MWRender
                         weaponType = left->get<ESM::Weapon>()->mBase->mData.mType;
                 }
                 else
-                    MWMechanics::getActiveWeapon(mPtr, &weaponType);
+                {
+                    // Inventory previews show equipment even while the world
+                    // actor is sheathed. Read the selected slot directly.
+                    const auto right = inventory.getSlot(MWWorld::InventoryStore::Slot_CarriedRight);
+                    if (right != inventory.end() && right->getType() == ESM::Weapon::sRecordId)
+                        weaponType = right->get<ESM::Weapon>()->mBase->mData.mType;
+                }
             }
             if (mEldenAnimation->play(clip, frame, loop, duration, yaw, leftArm, rightArm, grip,
                     weaponType == ESM::WeaponType::SpearTwoWide, weaponType == ESM::WeaponType::LongBladeTwoHand,
                     upperBodyOnly, bow,
                     (mPtr.getRefData().getPosition().rot[0] + getBodyPitchRadians()) * getPitchFactor(), bowDraw,
-                    leftHanded, offhandWeapon, offhandSpear))
+                    leftHanded, offhandWeapon, offhandSpear,
+                    weaponType == ESM::WeaponType::ShortBladeOneHand
+                        || weaponType == ESM::WeaponType::LongBladeOneHand
+                        || weaponType == ESM::WeaponType::LongBladeTwoHand, gripChange, gripChangeFrame))
             {
                 mEldenBowAnimation = bow;
                 return true;

@@ -221,6 +221,15 @@ namespace EldenCombat
         }
     }
 
+    void Input::resetKeepingGrip()
+    {
+        const bool twoHanded = mTwoHanded;
+        const bool twoHandedLeft = mTwoHandedLeft;
+        *this = {};
+        mTwoHanded = twoHanded;
+        mTwoHandedLeft = twoHandedLeft;
+    }
+
     void Input::clearEdges()
     {
         for (Button* button : { &mDodge, &mLight, &mHeavy, &mGuard, &mJump, &mCritical, &mSpearThrust })

@@ -953,7 +953,8 @@ namespace MWRender
         mAmmunition.reset();
         const auto& input = mPtr.getClass().getCreatureStats(mPtr).getEldenCombatInput();
         const bool showRightWeapon = showWeapon
-            && !(MWMechanics::useEldenMelee(mPtr) && input.mTwoHanded && input.mTwoHandedLeft);
+            && !((MWMechanics::useEldenMelee(mPtr) || mEldenInventoryPreview)
+                && input.mTwoHanded && input.mTwoHandedLeft);
         if (showRightWeapon)
         {
             const MWWorld::InventoryStore& inv = mPtr.getClass().getInventoryStore(mPtr);
@@ -1022,10 +1023,10 @@ namespace MWRender
             }
         }
 
-        if (MWMechanics::useEldenMelee(mPtr))
+        if (MWMechanics::useEldenMelee(mPtr) || mEldenInventoryPreview)
         {
             const auto& stats = mPtr.getClass().getCreatureStats(mPtr);
-            if (stats.getDrawState() == MWMechanics::DrawState::Weapon)
+            if (stats.getDrawState() == MWMechanics::DrawState::Weapon || mEldenInventoryPreview)
             {
                 const auto& input = stats.getEldenCombatInput();
                 return !input.mTwoHanded || input.mTwoHandedLeft;

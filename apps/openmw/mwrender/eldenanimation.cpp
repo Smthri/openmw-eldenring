@@ -274,47 +274,81 @@ namespace MWRender
             osg::Quat mShownModelRotation;
             LocalPose mFrom;
             osg::Quat mFromModelRotation;
+            LocalPose mNative;
+            osg::Matrixf mNativeMatrix;
+            float mNativeScale = 1.f;
+            bool mOverridden = false;
+
+            void restoreNative()
+            {
+                if (!mOverridden)
+                    return;
+                if (dynamic_cast<NifOsg::MatrixTransform*>(mNode.get()))
+                    applyPose(*mNode, mNative, mNativeScale);
+                else
+                    mNode->setMatrix(mNativeMatrix);
+                mOverridden = false;
+            }
         };
 
         struct Callback : SceneUtil::NodeCallback<Callback, osg::MatrixTransform*>
         {
             std::weak_ptr<Impl> mState;
             std::size_t mIndex = 0;
+            bool mBeforeNative = false;
 
             Callback() = default;
             Callback(const Callback& copy, const osg::CopyOp& op)
                 : SceneUtil::NodeCallback<Callback, osg::MatrixTransform*>(copy, op)
                 , mState(copy.mState)
                 , mIndex(copy.mIndex)
+                , mBeforeNative(copy.mBeforeNative)
             {
             }
             META_Object(MWRender, Callback)
 
             void operator()(osg::MatrixTransform* node, osg::NodeVisitor* visitor)
             {
-                if (const auto state = mState.lock(); state && state->mEnabled)
+                if (const auto state = mState.lock())
                 {
                     Bone& bone = state->mBones[mIndex];
-                    if (state->mUpperBodyOnly)
+                    if (mBeforeNative)
+                        bone.restoreNative();
+                    else if (state->mEnabled)
                     {
-                        if (upperBodyJoint(bone.mJoint))
+                        // Keep imported locals out of native blend origins and
+                        // tracks that animate only translation or scale. The
+                        // next native update resumes its own last pose.
+                        bone.mNative = { nodeRotation(*node), node->getMatrix().getTrans() };
+                        bone.mNativeMatrix = node->getMatrix();
+                        if (const auto* nif = dynamic_cast<const NifOsg::MatrixTransform*>(node))
+                            bone.mNativeScale = nif->mScale;
+                        if (state->mUpperBodyOnly)
                         {
-                            // Native locomotion has just updated the pelvis
-                            // and other ancestors. Resolve the imported upper
-                            // body's model-space rotation against that current
-                            // pose, preserving native translations and scale.
-                            osg::Quat parent;
-                            for (std::size_t i = bone.mParent; i != sNoParent; i = state->mBones[i].mParent)
-                                parent *= nodeRotation(*state->mBones[i].mNode);
-                            bone.mShown.mRotation = bone.mShownModelRotation * parent.inverse();
-                            bone.mShown.mTranslation = node->getMatrix().getTrans();
-                            static_cast<NifOsg::MatrixTransform*>(node)->setRotation(bone.mShown.mRotation);
+                            if (upperBodyJoint(bone.mJoint))
+                            {
+                                // Native locomotion has just updated the pelvis
+                                // and other ancestors. Resolve the imported upper
+                                // body's model-space rotation against that current
+                                // pose, preserving native translations and scale.
+                                osg::Quat parent;
+                                for (std::size_t i = bone.mParent; i != sNoParent; i = state->mBones[i].mParent)
+                                    parent *= nodeRotation(*state->mBones[i].mNode);
+                                bone.mShown.mRotation = bone.mShownModelRotation * parent.inverse();
+                                bone.mShown.mTranslation = node->getMatrix().getTrans();
+                                static_cast<NifOsg::MatrixTransform*>(node)->setRotation(bone.mShown.mRotation);
+                                bone.mOverridden = true;
+                            }
+                        }
+                        else
+                        {
+                            if (bone.mJoint == sNoJoint && !dynamic_cast<NifOsg::MatrixTransform*>(node))
+                                node->setMatrix(bone.mRestMatrix);
+                            else
+                                applyPose(*node, bone.mShown, bone.mScale);
+                            bone.mOverridden = true;
                         }
                     }
-                    else if (bone.mJoint == sNoJoint && !dynamic_cast<NifOsg::MatrixTransform*>(node))
-                        node->setMatrix(bone.mRestMatrix);
-                    else
-                        applyPose(*node, bone.mShown, bone.mScale);
                 }
                 traverse(node, visitor);
             }
@@ -340,7 +374,7 @@ namespace MWRender
                 {
                     if (mBeforeNative)
                         state->restoreWeapon();
-                    else if (state->mEnabled && state->mAlignSpear && !state->mTwoHandedSpear
+                    else if (state->mEnabled && (state->mAlignSpear || state->mAlignWeapon) && !state->mTwoHandedSpear
                         && !state->mLeftHanded)
                         state->applyWeapon();
                 }
@@ -489,6 +523,8 @@ namespace MWRender
         std::string mLeftArmClip;
         std::string mRightArmClip;
         std::string mGripClip;
+        std::string mGripChangeClip;
+        float mGripChangeFrame = 0.f;
         float mFade = 0.f;
         float mFadeLength = 0.f;
         EldenPose::HeadingBlend mFacing;
@@ -529,6 +565,7 @@ namespace MWRender
         osg::Quat mWeaponBlendFrom;
         float mWeaponBlend = 1.f;
         bool mAlignSpear = false;
+        bool mAlignWeapon = false;
         bool mWeaponOverridden = false;
         bool mHaveShownWeapon = false;
         bool mHaveWeaponBlendFrom = false;
@@ -893,7 +930,7 @@ namespace MWRender
             // native update, then solve before this frame's bone callbacks and
             // skinning cache run. The normal pose fade covers entry transitions.
             osg::Matrixf attachment = node->getMatrix();
-            if (mLeftHanded)
+            if (mLeftHanded || mAlignWeapon)
             {
                 const osg::Quat facing(mFacing.shown(), osg::Vec3f(0, 0, 1));
                 osg::Quat rotation;
@@ -902,7 +939,7 @@ namespace MWRender
                     mWeaponTargetRotation);
                 attachment = osg::Matrixf::scale(node->mScale, node->mScale, node->mScale)
                     * osg::Matrixf::rotate(rotation * facing * mModelRotations[rightHand].inverse());
-                attachment.setTrans(mSpearLeftPalm);
+                attachment.setTrans(mLeftHanded ? mSpearLeftPalm : osg::Vec3f(node->getMatrix().getTrans()));
             }
             const osg::Matrixf weaponModel = attachment * mModelMatrices[rightHand];
             const float scale = osg::Matrixf::transform3x3(osg::Vec3f(0, 1, 0), weaponModel).length();
@@ -1188,14 +1225,14 @@ namespace MWRender
             }
         }
 
-        void overlay(std::string_view name, bool left)
+        void overlay(std::string_view name, bool left, float frame, bool loop = true)
         {
             if (name.empty())
                 return;
             const auto* clip = mBank->find(name);
             if (!clip)
                 return;
-            mBank->sample(*clip, mLayerFrame, true, mLayer);
+            mBank->sample(*clip, frame, loop, mLayer);
             const std::size_t chest = mOffsets[Spine2];
             const std::size_t firstArm = left ? LClavicle : RClavicle;
             const std::size_t firstFinger = left ? LFinger0 : RFinger0;
@@ -1254,6 +1291,7 @@ namespace MWRender
             mBow = false;
             mHaveBowFrom = false;
             mAlignSpear = false;
+            mAlignWeapon = false;
             mAlignLeftWeapon = false;
             mHaveShownWeapon = false;
             mHaveWeaponBlendFrom = false;
@@ -1266,29 +1304,13 @@ namespace MWRender
             if (!mEnabled)
                 return;
             mEnabled = false;
-            for (const Bone& bone : mBones)
-            {
-                if (mUpperBodyOnly)
-                {
-                    if (upperBodyJoint(bone.mJoint))
-                        static_cast<NifOsg::MatrixTransform*>(bone.mNode.get())->setRotation(bone.mRest.mRotation);
-                    continue;
-                }
-                if (bone.mJoint == sNoJoint)
-                {
-                    // Keep NIF's decomposed state in step with its matrix.
-                    if (dynamic_cast<NifOsg::MatrixTransform*>(bone.mNode.get()))
-                        applyPose(*bone.mNode, bone.mRest, bone.mScale);
-                    else
-                        bone.mNode->setMatrix(bone.mRestMatrix);
-                }
-                else
-                    applyPose(*bone.mNode, bone.mRest, bone.mScale);
-            }
+            for (Bone& bone : mBones)
+                bone.restoreNative();
             mClip.clear();
             mLeftArmClip.clear();
             mRightArmClip.clear();
             mGripClip.clear();
+            mGripChangeClip.clear();
         }
     };
 
@@ -1622,10 +1644,15 @@ namespace MWRender
         state.mValid = true;
         for (std::size_t i = 0; i != state.mBones.size(); ++i)
         {
-            osg::ref_ptr<Impl::Callback> callback = new Impl::Callback;
-            callback->mState = mImpl;
-            callback->mIndex = i;
-            mControllers.emplace_back(state.mBones[i].mNode, callback);
+            for (bool before : { true, false })
+            {
+                osg::ref_ptr<Impl::Callback> callback = new Impl::Callback;
+                callback->mState = mImpl;
+                callback->mIndex = i;
+                callback->mBeforeNative = before;
+                auto& controllers = before ? mBeforeNativeControllers : mControllers;
+                controllers.emplace_back(state.mBones[i].mNode, callback);
+            }
         }
 
         state.mWeaponAxes = state.mBank->axesOffset("R_Weapon");
@@ -1873,7 +1900,8 @@ namespace MWRender
     bool EldenAnimation::play(std::string_view clipName, float frame, bool loop, float duration, float yaw,
         std::string_view leftArmClip, std::string_view rightArmClip, std::string_view gripClip, bool alignSpear,
         bool twoHandedSword, bool upperBodyOnly, bool bow, float pitch, float bowDraw, bool leftHanded,
-        bool offhandWeapon, bool offhandSpear)
+        bool offhandWeapon, bool offhandSpear, bool alignWeapon,
+        std::string_view gripChange, float gripChangeFrame)
     {
         auto& state = *mImpl;
         if (!state.mValid || !std::isfinite(frame) || !std::isfinite(yaw) || !std::isfinite(pitch)
@@ -1903,8 +1931,8 @@ namespace MWRender
         state.mLeftHanded = leftHanded;
         state.mBank->sample(*clip, frame, loop, state.mSample);
         state.mLayerFrame += duration * 30.f;
-        state.overlay(leftArmClip, true);
-        state.overlay(rightArmClip, false);
+        state.overlay(leftArmClip, true, state.mLayerFrame);
+        state.overlay(rightArmClip, false, state.mLayerFrame);
         alignSpear = alignSpear || state.mEmbeddedSpear;
         const bool shieldLayer = (leftArmClip == "a000_000100" && rightArmClip != leftArmClip)
             || leftArmClip == "a015_000100";
@@ -1919,8 +1947,16 @@ namespace MWRender
         // clips already author the left arm and must retain their source pose.
         if (leftHanded && !shieldStance && !clipName.starts_with("a000_029"))
             state.mirrorPose();
+        // Grip changes have their own hand-specific source clips. Layer their
+        // exact action clock over the facing and legs of the current gait.
+        if (!gripChange.empty() && std::isfinite(gripChangeFrame))
+        {
+            state.overlay(gripChange, true, gripChangeFrame, false);
+            state.overlay(gripChange, false, gripChangeFrame, false);
+        }
         const auto weaponAxes = leftHanded ? state.mShieldAxes : state.mWeaponAxes;
         const bool spear = alignSpear && state.heldWeaponNode() && weaponAxes;
+        const bool weapon = alignWeapon && !leftHanded && state.mWeaponNode && state.mWeaponAxes;
         const bool leftWeapon = leftHanded && !shieldStance && state.mShieldNode
             && state.mShieldAxes && !state.mSpearLeftParents.empty();
         const bool offhand = offhandWeapon && !leftHanded && state.mShieldNode
@@ -1941,12 +1977,16 @@ namespace MWRender
         const bool clipChanged = state.mClip != clipName || restarted;
         const bool changed = clipChanged || state.mLeftArmClip != leftArmClip
             || state.mRightArmClip != rightArmClip || state.mGripClip != gripClip || state.mAlignSpear != spear
+            || state.mAlignWeapon != weapon
             || state.mAlignShield != shield || state.mUpperBodyOnly != upperBodyOnly || state.mBow != bow
             || handChanged || state.mAlignLeftWeapon != leftWeapon || state.mAlignOffhandWeapon != offhand
-            || state.mAlignOffhandSpear != (offhand && offhandSpear);
+            || state.mAlignOffhandSpear != (offhand && offhandSpear)
+            || state.mGripChangeClip != gripChange
+            || (!gripChange.empty() && gripChangeFrame < state.mGripChangeFrame);
         state.mFrame = frame;
+        state.mGripChangeFrame = gripChangeFrame;
         state.mLoop = loop;
-        if (!spear && !leftWeapon)
+        if (!spear && !leftWeapon && !weapon)
         {
             state.restoreWeapon();
             state.mHaveShownWeapon = false;
@@ -1962,6 +2002,7 @@ namespace MWRender
         state.mBow = bow;
         state.mBowDraw = std::isfinite(bowDraw) ? std::clamp(bowDraw, 0.f, 1.f) : 0.f;
         state.mAlignSpear = spear;
+        state.mAlignWeapon = weapon;
         state.mAlignShield = shield;
         state.mAlignOffhandWeapon = offhand;
         state.mAlignOffhandSpear = offhand && offhandSpear;
@@ -2001,6 +2042,7 @@ namespace MWRender
             state.mLeftArmClip = leftArmClip;
             state.mRightArmClip = rightArmClip;
             state.mGripClip = gripClip;
+            state.mGripChangeClip = gripChange;
             state.mFade = 0.f;
             state.mFadeLength = clipChanged ? clip->mBlendFrames / 30.f : 0.12f;
             if (bowReleased)
@@ -2026,7 +2068,7 @@ namespace MWRender
         float blend = state.mFadeLength > 0.f ? std::clamp(state.mFade / state.mFadeLength, 0.f, 1.f) : 1.f;
         blend = blend * blend * (3.f - 2.f * blend);
         const osg::Quat facing(state.mFacing.update(yaw, blend), osg::Vec3f(0, 0, 1));
-        if (spear || leftWeapon)
+        if (spear || leftWeapon || weapon)
         {
             state.mWeaponBlend = blend;
             state.mWeaponTargetRotation = state.mWeaponBasis * frameRotation(fromSource(state.mSample, *weaponAxes),
@@ -2140,7 +2182,7 @@ namespace MWRender
             "a012_022100", "a012_022101", "a012_022102", "a012_022103",
         };
         if (twoHandedSword && loop && gripClip == "a012_000000" && !alignSpear && !upperBodyOnly
-            && leftArmClip.empty() && rightArmClip.empty()
+            && leftArmClip.empty() && rightArmClip.empty() && gripChange.empty()
             && std::find(swordCarryClips.begin(), swordCarryClips.end(), clipName) != swordCarryClips.end())
             state.closeSwordGrip(blend);
         state.mEnabled = true;

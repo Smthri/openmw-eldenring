@@ -134,10 +134,7 @@ namespace MWClass
             // creature stats
             for (const auto& [attribute, value] : ref->mBase->mData.mAttributes)
                 data->mCreatureStats.setAttribute(attribute, static_cast<float>(value));
-            const float healthMultiplier = Settings::game().mEldenRingCombat
-                    && ref->mBase->mId == ESM::RefId::stringRefId("golden saint_staada")
-                ? 3.f : 1.f;
-            data->mCreatureStats.setHealth(static_cast<float>(ref->mBase->mData.mHealth) * healthMultiplier);
+            data->mCreatureStats.setHealth(static_cast<float>(ref->mBase->mData.mHealth));
             data->mCreatureStats.setMagicka(static_cast<float>(ref->mBase->mData.mMana));
             data->mCreatureStats.setFatigue(static_cast<float>(ref->mBase->mData.mFatigue));
 
@@ -784,22 +781,6 @@ namespace MWClass
         if (spellsInitialised)
             customData.mCreatureStats.getSpells().clear();
         customData.mCreatureStats.readState(creatureState.mCreatureStats);
-
-        if (Settings::game().mEldenRingCombat
-            && ptr.get<ESM::Creature>()->mBase->mId == ESM::RefId::stringRefId("golden saint_staada")
-            && !customData.mCreatureStats.isDead())
-        {
-            const float baseHealth = static_cast<float>(ptr.get<ESM::Creature>()->mBase->mData.mHealth);
-            auto health = customData.mCreatureStats.getHealth();
-            // Upgrade existing saves once; retain their health ratio and custom base overrides.
-            if (baseHealth > 0.f && health.getBase() == baseHealth && health.getModified() > 0.f)
-            {
-                const float healthRatio = health.getRatio();
-                health.setBase(baseHealth * 3.f);
-                health.setCurrent(health.getModified() * healthRatio, false, true);
-                customData.mCreatureStats.setHealth(health);
-            }
-        }
     }
 
     void Creature::writeAdditionalState(const MWWorld::ConstPtr& ptr, ESM::ObjectState& state) const

@@ -349,13 +349,6 @@ namespace MWMechanics
             poise.mStrength = stats.getAttribute(ESM::Attribute::Strength).getModified();
             poise.mCreature = !cls.isNpc();
             poise.mHealth = stats.getHealth().getModified();
-            if (poise.mCreature && actor.getCellRef().getRefId() == ESM::RefId::stringRefId("golden saint_staada"))
-            {
-                // Staada's extra health must not also increase her poise.
-                const float baseHealth = static_cast<float>(actor.get<ESM::Creature>()->mBase->mData.mHealth);
-                if (stats.getHealth().getBase() == baseHealth * 3.f)
-                    poise.mHealth -= baseHealth * 2.f;
-            }
             poise.mLevel = static_cast<float>(stats.getLevel());
             if (!poise.mCreature)
                 poise.mArmorRating = cls.getArmorRating(actor);

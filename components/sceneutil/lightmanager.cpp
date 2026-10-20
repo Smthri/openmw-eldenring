@@ -134,19 +134,26 @@ namespace SceneUtil
     };
 
     LightManagerCullCallback::LightManagerCullCallback(const LightSettings& settings)
-        : mGridSizeX(settings.mClusteredGridSize.x())
+        : mNoPointLightStateSet(new osg::StateSet)
+        , mGridSizeX(settings.mClusteredGridSize.x())
         , mGridSizeY(settings.mClusteredGridSize.y())
         , mGridSizeZ(settings.mClusteredGridSize.z())
         , mNumClusters(mGridSizeX * mGridSizeY * mGridSizeZ)
         , mWorkGroupSize(settings.mClusteredWorkGroupSize)
     {
+        mNoPointLightStateSet->addUniform(new osg::Uniform("pointLightingEnabled", false),
+            osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
     }
 
     void LightManagerCullCallback::operator()(LightManager* node, osgUtil::CullVisitor* cv)
     {
         if (!(cv->getTraversalMask() & node->getLightingMask()))
         {
+            // Auxiliary views such as the local map have no light buffers or cluster grid.
+            // Skipping their setup must also prevent shaders from reading another view's buffers.
+            cv->pushStateSet(mNoPointLightStateSet);
             traverse(node, cv);
+            cv->popStateSet();
             return;
         }
 
@@ -230,6 +237,7 @@ namespace SceneUtil
         if (!stateset)
         {
             stateset = new osg::StateSet;
+            stateset->addUniform(new osg::Uniform("pointLightingEnabled", true));
             stateset->addUniform(new osg::Uniform("sun.position", osg::Vec4f{}));
             stateset->addUniform(new osg::Uniform("sun.diffuse", osg::Vec4f{}));
             stateset->addUniform(new osg::Uniform("sun.ambient", osg::Vec4f{}));

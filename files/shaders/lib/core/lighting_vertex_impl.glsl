@@ -33,6 +33,9 @@ void pointLighting(vec2 screenCoord, vec3 viewDir, vec3 viewPos, vec3 viewNormal
     return;
 #endif
 
+    if (!pointLightingEnabled)
+        return;
+
 #if @lightingMethodClustered
     LightGrid grid = lightGrid[getClusterTileIndex(screenRes, gridSize, near, screenCoord, viewPos.z)];
     for (uint i = 0u; i < grid.count; ++i) {

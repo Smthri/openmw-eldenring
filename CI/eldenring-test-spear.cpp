@@ -1306,7 +1306,8 @@ namespace
         }
     }
 
-    void swordSupportGrip(const std::shared_ptr<const EldenCombat::AnimationBank>& bank = fixtureBank(true, true))
+    void swordSupportGrip(const std::shared_ptr<const EldenCombat::AnimationBank>& bank = fixtureBank(true, true),
+        bool alignWeapon = false)
     {
         Rig rig(bank, false, true), reference(bank, false, true);
         const auto attachHandle = [](Rig& target, bool useGeode = true) {
@@ -1371,7 +1372,8 @@ namespace
                               bool spear = false, float yaw = 0.f, float frame = 0.f) {
             sampledClip = clip;
             sampledFrame = frame;
-            check(target.mAnimation->play(clip, frame, loop, duration, yaw, left, {}, "a012_000000", spear, correction),
+            check(target.mAnimation->play(clip, frame, loop, duration, yaw, left, {}, "a012_000000", spear, correction,
+                      false, false, 0.f, 0.f, false, false, false, alignWeapon),
                 "support grip fixture clip rejected");
             target.update();
         };
@@ -1672,6 +1674,7 @@ namespace
 }
 
 #include "eldenring-test-left-grip.hpp"
+#include "eldenring-test-pose-handoff.hpp"
 
 int main(int argc, char** argv)
 {
@@ -1694,6 +1697,9 @@ int main(int argc, char** argv)
         comboPlaneContinuity();
         fingerCurl(fixtureBank(), "a013_000000");
         swordSupportGrip();
+        swordSupportGrip(fixtureBank(true, true), true);
+        nativePoseHandoff(fixtureBank());
+        swordAxisAlignment(fixtureBank(), false);
         if (argc > 1)
         {
             realClips(argv[1]);
@@ -1701,6 +1707,10 @@ int main(int argc, char** argv)
             const auto actualBank = std::make_shared<EldenCombat::AnimationBank>(input);
             bowAttachments(actualBank);
             leftGripTests(actualBank);
+            nativePoseHandoff(actualBank);
+            swordAxisAlignment(actualBank, true);
+            timedGripLayers(actualBank);
+            swordSupportGrip(actualBank, true);
         }
         std::cout << "Weapon attachment retarget validation passed: " << checks << " assertions\n";
     }

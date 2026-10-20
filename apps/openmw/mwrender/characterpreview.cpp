@@ -12,6 +12,7 @@
 #include <osgUtil/LineSegmentIntersector>
 
 #include <components/debug/debuglog.hpp>
+#include <components/eldencombat/combat.hpp>
 #include <components/fallback/fallback.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
@@ -29,6 +30,8 @@
 #include "../mwworld/inventorystore.hpp"
 
 #include "../mwmechanics/actorutil.hpp"
+#include "../mwmechanics/creaturestats.hpp"
+#include "../mwmechanics/eldencombat.hpp"
 #include "../mwmechanics/weapontype.hpp"
 
 #include "npcanimation.hpp"
@@ -377,11 +380,27 @@ namespace MWRender
         if (!mAnimation.get())
             return;
 
+        MWWorld::InventoryStore& inv = mCharacter.getClass().getInventoryStore(mCharacter);
+        MWWorld::ContainerStoreIterator iter = inv.getSlot(MWWorld::InventoryStore::Slot_CarriedRight);
+        const auto& input = mCharacter.getClass().getCreatureStats(mCharacter).getEldenCombatInput();
+        const auto selected = input.mTwoHanded && input.mTwoHandedLeft
+            ? inv.getSlot(MWWorld::InventoryStore::Slot_CarriedLeft) : iter;
+        std::string eldenStance;
+        if (mAnimation->hasEldenAnimation() && MWMechanics::useEldenCombat(mCharacter)
+            && (selected == inv.end() || selected->getType() != ESM::Weapon::sRecordId
+                || MWMechanics::getWeaponType(selected->get<ESM::Weapon>()->mBase->mData.mType)->mWeaponClass
+                    == ESM::WeaponType::Melee))
+        {
+            const auto config = MWMechanics::eldenCombatConfig(mCharacter);
+            eldenStance = EldenCombat::stanceAnimation(config.mWeaponClass, input.mTwoHanded, 0);
+            if (mAnimation->getEldenAnimationLength(eldenStance) <= 0.f)
+                eldenStance.clear();
+        }
+        mAnimation->clearEldenAnimation();
+        mAnimation->setEldenInventoryPreview(!eldenStance.empty());
         mAnimation->showWeapons(true);
         mAnimation->updateParts();
 
-        MWWorld::InventoryStore& inv = mCharacter.getClass().getInventoryStore(mCharacter);
-        MWWorld::ContainerStoreIterator iter = inv.getSlot(MWWorld::InventoryStore::Slot_CarriedRight);
         std::string groupname = "inventoryhandtohand";
         bool showCarriedLeft = true;
         if (iter != inv.end())
@@ -417,6 +436,8 @@ namespace MWRender
             }
         }
 
+        if (!eldenStance.empty())
+            showCarriedLeft = !input.mTwoHanded || input.mTwoHandedLeft;
         mAnimation->showCarriedLeft(showCarriedLeft);
 
         mCurrentAnimGroup = std::move(groupname);
@@ -433,6 +454,11 @@ namespace MWRender
             mAnimation->disable("torch");
 
         mAnimation->runAnimation(0.0f);
+        // The inventory is a static render. Finish the pose fade now so both
+        // hands and their attachment axes match the selected combat grip even
+        // when the world actor currently has its weapons sheathed.
+        if (!eldenStance.empty())
+            mAnimation->playEldenAnimation(eldenStance, 0.f, true, 1.f, 0.f, {}, {}, eldenStance);
 
         setBlendMode();
 
