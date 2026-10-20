@@ -2,6 +2,8 @@
 #define OPENMW_ELDENCOMBAT_NATIVEATTACKTESTS_H
 
 #include "combat.hpp"
+#include "nativeattack.hpp"
+#include "creatureposes.hpp"
 
 #include <cmath>
 #include <limits>
@@ -28,6 +30,55 @@ namespace EldenCombat::Tests
             check(controller.action() == (heavy ? Action::Heavy1 : Action::Light1),
                 "native attack started the wrong controller action");
         };
+        for (const char* model : { "meshes\\r\\AshSlave.NIF", "r/ashzombie.nif", "r/ashvampire.nif",
+                 "r/dagothr.nif", "r/cr_draugr.nif", "r/draugrlord.nif" })
+            check(humanoidCreatureModel(model), "known upright native humanoid was not admitted");
+        for (const char* model : { "Meshes\\R\\xAshSlave.NIF", "r/xashzombie.nif", "r/xashvampire.nif",
+                 "r/xdagothr.nif", "r/xcr_draugr.nif", "r/xdraugrlord.nif" })
+            check(humanoidCreatureModel(model), "animated native humanoid mesh was not admitted");
+        for (const char* model : { "r/rust rat.nif", "r/wolf_black.nif", "r/guar.nif", "r/duskyalit.nif",
+                 "r/leastkagouti.nif", "r/minescrib.nif", "r/bonelord.nif", "r/wingedtwilight.nif",
+                 "r/fabricant_imperfect.nif", "r/ascendedsleeper.nif", "r/mod_ashslave.nif",
+                 "r/ashslave.nif.extra", "custom/r/ashslave.nif", "custom/r/xashslave.nif",
+                 "r/xxashslave.nif", "r/xashslave.nif.extra", "" })
+            check(!humanoidCreatureModel(model), "unmatched creature inherited human poses");
+        check(hircineGuileModel("BM_hircine_huntaspect", "Meshes\\R\\Hircine.NIF"),
+            "Guile's case-insensitive native record/model was rejected");
+        check(hircineGuileModel("BM_hircine_huntaspect", "Meshes\\R\\xHircine.NIF"),
+            "Guile's runtime animated model was rejected");
+        for (const char* id : { "bm_hircine", "bm_hircine2", "bm_hircine_straspect", "bm_hircine_spdaspect", "" })
+        {
+            check(!hircineGuileModel(id, "r/hircine.nif"), "non-Guile Hircine form inherited spear poses");
+            check(!hircineGuileModel(id, "r/xhircine.nif"), "animated non-Guile Hircine form inherited spear poses");
+        }
+        for (const char* model : { "r/Hircine_Bear_larger.NIF", "r/HircineWolf.NIF", "custom/r/hircine.nif",
+                 "r/xHircine_Bear_larger.NIF", "r/xHircineWolf.NIF", "custom/r/xhircine.nif",
+                 "r/xxhircine.nif", "r/xhircine.nif.extra", "" })
+            check(!hircineGuileModel("bm_hircine_huntaspect", model), "replacement nonhumanoid model inherited spear poses");
+        // Source key offsets are independent of a model's bipedal flag and
+        // import eligibility. Keep the visible native clip and one native hit
+        // on the same clock when an imported skeleton is unavailable.
+        const auto keys = nativeAttackTiming("attack2", 37.f, 39.f, 38.25f);
+        check(keys && keys->mAnimation == "attack2", "valid native creature keys were rejected");
+        close(keys->mDuration, 60.f, "native key duration included the source timeline offset");
+        close(keys->mHitFrame, 37.5f, "native key impact included the source timeline offset");
+        const auto noHit = nativeAttackTiming("attack1", 12.f, 13.f, -1.f);
+        check(noHit && noHit->mHitFrame == 0.f, "missing native hit key lost contact at start");
+        check(!nativeAttackTiming("attack1", 3.f, 3.f, 3.f)
+                && !nativeAttackTiming("attack1", 4.f, 3.f, 3.f)
+                && !nativeAttackTiming("attack1", 2.f, 3.f, 1.f)
+                && !nativeAttackTiming("attack1", 2.f, 3.f, 4.f)
+                && !nativeAttackTiming("attack1", -1.f, 3.f, 2.f)
+                && !nativeAttackTiming("", 1.f, 3.f, 2.f),
+            "invalid native timeline was admitted");
+        for (const float invalid : { std::numeric_limits<float>::quiet_NaN(),
+                 std::numeric_limits<float>::infinity() })
+            check(!nativeAttackTiming("attack1", invalid, 3.f, 2.f)
+                    && !nativeAttackTiming("attack1", 1.f, invalid, 2.f)
+                    && !nativeAttackTiming("attack1", 1.f, 3.f, invalid),
+                "non-finite native text key reached the controller");
+        check(!nativeAttackTiming("attack1", 0.f, std::numeric_limits<float>::max(), 1.f),
+            "native seconds-to-frames conversion overflowed");
         Config config;
         config.mWeaponClass = WeaponClass::Fist;
         config.mStaminaRegen = 0.f;

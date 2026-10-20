@@ -198,6 +198,87 @@ namespace MWRender::EldenPose
         bool mValid = false;
     };
 
+    // Elbow flexion has an oriented plane: its sign is calibrated once from
+    // neutral anatomy. Choosing a fresh hemisphere against the torso or the
+    // previous frame can retain an inverted shoulder after a winding strike.
+    // Only a nearly straight arm lacks this signed orientation information.
+    class ArmBendPlane
+    {
+    public:
+        void reset() { mValid = mRestart = mRecovering = false; mTurnSign = 1.f; }
+        void restart() { mRestart = true; }
+
+        osg::Vec3f secondary(const osg::Vec3f& upper, const osg::Vec3f& lower,
+            const osg::Vec3f& primary, const osg::Vec3f& reference, float duration, float sign)
+        {
+            const osg::Vec3f axis = unit(primary, osg::Vec3f(0, 0, -1));
+            if (mValid && !mRestart && upper == mUpper && lower == mLower && primary == mPrimary)
+                return mNormal ^ primary;
+            const osg::Vec3f a = unit(upper, axis);
+            const osg::Vec3f bend = a ^ unit(lower, a);
+            const float confidence = std::clamp(bend.length() / .15f, 0.f, 1.f);
+            const osg::Vec3f target = perpendicular(axis, bend * (sign < 0.f ? -1.f : 1.f));
+            osg::Vec3f normal;
+            if (!mValid || (mRestart && confidence >= 1.f))
+            {
+                normal = confidence >= 1.f ? target : perpendicular(axis, reference);
+                mRecovering = confidence < 1.f;
+            }
+            else
+            {
+                const osg::Vec3f turn = mAxis ^ axis;
+                const float cosine = std::clamp(mAxis * axis, -1.f, 1.f);
+                normal = mNormal;
+                if (cosine > -.9999f)
+                    normal += (turn ^ normal) + (turn ^ (turn ^ normal)) / (1.f + cosine);
+                normal = perpendicular(axis, normal);
+                mRecovering |= confidence < 1.f;
+                // A new clip cannot infer roll from a straight arm either.
+                // Retain its transported incoming plane until the bend
+                // becomes reliable, rather than returning to torso axes.
+                if (!mRestart && duration > 0.f && confidence > 0.f)
+                {
+                    if (!mRecovering)
+                        normal = target;
+                    else
+                    {
+                        constexpr float pi = 3.14159265358979323846f;
+                        float angle = std::atan2(axis * (normal ^ target),
+                            std::clamp(normal * target, -1.f, 1.f));
+                        // Opposite signed planes cannot use a linear blend:
+                        // its midpoint is zero. Resolve that half-turn once
+                        // and rotate around the segment at a bounded rate.
+                        if (std::abs(std::abs(angle) - pi) < 1e-4f)
+                            angle = pi * mTurnSign;
+                        const float amount = 1.f - std::pow(1.f - confidence, duration * 30.f);
+                        const float step = std::clamp(angle * amount, -8.f * pi * duration, 8.f * pi * duration);
+                        if (std::abs(step) > 1e-6f)
+                            mTurnSign = step < 0.f ? -1.f : 1.f;
+                        normal = normal * std::cos(step) + (axis ^ normal) * std::sin(step);
+                        normal = perpendicular(axis, normal);
+                        if (confidence >= 1.f && std::abs(angle - step) < 1e-4f)
+                            mRecovering = false;
+                    }
+                }
+            }
+            mUpper = upper;
+            mLower = lower;
+            mPrimary = primary;
+            mAxis = axis;
+            mNormal = normal;
+            mValid = true;
+            mRestart = false;
+            return normal ^ primary;
+        }
+
+    private:
+        osg::Vec3f mUpper, mLower, mPrimary, mAxis, mNormal;
+        bool mValid = false;
+        bool mRestart = false;
+        bool mRecovering = false;
+        float mTurnSign = 1.f;
+    };
+
     // The toe can point straight down during every running stride. Projecting
     // torso-up directly against that toe axis loses the foot's roll there and
     // flips its sole when the toe passes vertical. Use the anatomical lateral

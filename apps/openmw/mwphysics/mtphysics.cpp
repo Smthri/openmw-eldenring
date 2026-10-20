@@ -24,12 +24,14 @@
 #include "../mwmechanics/creaturestats.hpp"
 
 #include "../mwworld/class.hpp"
+#include "../mwworld/cellstore.hpp"
 
 #include "../mwbase/environment.hpp"
 #include "../mwbase/world.hpp"
 
 #include "actor.hpp"
 #include "contacttestwrapper.h"
+#include "groundrecovery.hpp"
 #include "movementsolver.hpp"
 #include "object.hpp"
 #include "physicssystem.hpp"
@@ -167,7 +169,7 @@ namespace
 
         struct InitPosition
         {
-            const btCollisionWorld* mCollisionWorld;
+            btCollisionWorld* mCollisionWorld;
             void operator()(MWPhysics::ActorSimulation& sim) const
             {
                 auto locked = sim.lock();
@@ -176,6 +178,39 @@ namespace
                 auto& [actor, frameDataRef] = *locked;
                 auto& frameData = frameDataRef.get();
                 frameData.mPosition = actor->applyOffsetChange();
+                const auto ptr = actor->getPtr();
+                if (frameData.mCheckGroundRecovery && !frameData.mIsPlayer && !frameData.mSkipCollisionDetection
+                    && !frameData.mFlying && ptr.isInCell() && ptr.getCell()->isExterior()
+                    && ptr.getClass().isNpc())
+                {
+                    actor->updateCollisionObjectPosition();
+                    // This runs on the main thread after the preceding worker
+                    // batch is synced. Sample at the current position, including
+                    // script offsets, rather than at the earlier frame snapshot.
+                    const auto world = MWBase::Environment::get().getWorld();
+                    const float terrain = world->getTerrainHeightAt(
+                        frameData.mPosition, ptr.getCell()->getCell()->getWorldSpace());
+                    const auto target = MWPhysics::findGroundRecoveryPosition(*mCollisionWorld,
+                        *actor->getConvexShape(), actor->getCollisionObject()->getWorldTransform(),
+                        Misc::Convert::toBullet(frameData.mPosition),
+                        Misc::Convert::toBullet(actor->getCollisionObjectPosition() - frameData.mPosition),
+                        frameData.mHalfExtentsZ, terrain);
+                    if (target)
+                    {
+                        world->moveObject(ptr, ptr.getCell(), Misc::Convert::toOsg(*target));
+                        actor->setInertialForce(osg::Vec3f());
+                        actor->setStuckFrames(0);
+                        actor->setLastStuckPosition(osg::Vec3f());
+                        actor->setOnGround(false);
+                        actor->setOnSlope(false);
+                        ptr.getClass().getCreatureStats(ptr).land(false);
+                        frameData.mPosition = actor->applyOffsetChange();
+                        frameData.mIsOnGround = frameData.mWasOnGround = false;
+                        frameData.mIsOnSlope = false;
+                        Log(Debug::Info) << "Recovered NPC " << ptr.getCellRef().getRefId()
+                                         << " from below terrain";
+                    }
+                }
                 if (frameData.mWaterCollision && frameData.mPosition.z() < frameData.mWaterlevel
                     && actor->canMoveToWaterSurface(frameData.mWaterlevel, mCollisionWorld))
                 {
@@ -551,6 +586,10 @@ namespace MWPhysics
 
         auto [numSteps, newDelta] = calculateStepConfig(timeAccum);
         timeAccum -= numSteps * newDelta;
+
+        // Ground recovery queries must see this frame's moved/scaled static
+        // geometry and doors, not the previous broadphase bounds.
+        updateAabbs();
 
         // init
         const Visitors::InitPosition vis{ mCollisionWorld };

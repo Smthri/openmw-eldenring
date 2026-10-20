@@ -326,8 +326,11 @@ namespace MWGui
         {
             MWWorld::InventoryStore& invStore = mPtr.getClass().getInventoryStore(mPtr);
             MWWorld::ContainerStoreIterator weapIt = invStore.getSlot(MWWorld::InventoryStore::Slot_CarriedRight);
+            const auto left = invStore.getSlot(MWWorld::InventoryStore::Slot_CarriedLeft);
             bool weapActive = mPtr.getClass().getCreatureStats(mPtr).getDrawState() == MWMechanics::DrawState::Weapon;
-            if (weapActive && weapIt != invStore.end() && *weapIt == item.mBase)
+            const bool usedByAttack = (weapIt != invStore.end() && *weapIt == item.mBase)
+                || (Settings::game().mEldenRingCombat && left != invStore.end() && *left == item.mBase);
+            if (weapActive && usedByAttack)
             {
                 MWBase::Environment::get().getWindowManager()->messageBox("#{sCantEquipWeapWarning}");
                 return;
@@ -908,10 +911,12 @@ namespace MWGui
         if (model.getItemCount() == 0)
             return;
 
+        const auto& inventory = player.getClass().getInventoryStore(player);
+        const auto right = inventory.getSlot(MWWorld::InventoryStore::Slot_CarriedRight);
         for (ItemModel::ModelIndex i = 0; i < int(model.getItemCount()); ++i)
         {
             MWWorld::Ptr item = model.getItem(i).mBase;
-            if (model.getItem(i).mType & ItemStack::Type_Equipped && isRightHandWeapon(item))
+            if (right != inventory.end() && *right == item && isRightHandWeapon(item))
                 selected = i;
         }
 

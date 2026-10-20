@@ -2,6 +2,7 @@
 // No game assets are required. Optionally pass player_anims.bin to also check
 // the extracted spear heavy attacks and sword roll/jump recovery blends.
 #include <apps/openmw/mwrender/eldenanimation.hpp>
+#include <apps/openmw/mwrender/eldenanatomy.hpp>
 #include <components/eldencombat/animations.hpp>
 #include <components/nifosg/matrixtransform.hpp>
 #include <components/sceneutil/nodecallback.hpp>
@@ -71,7 +72,7 @@ namespace
     };
 
     std::shared_ptr<const EldenCombat::AnimationBank> fixtureBank(
-        bool weaponAxes = true, bool animatedBody = false, bool windingTorso = false)
+        bool weaponAxes = true, bool animatedBody = false, bool windingTorso = false, bool windingArm = false)
     {
         // Express the fixture in OpenMW's coordinates, then encode ERAN's basis.
         std::array<osg::Vec3f, 38> p = {
@@ -89,7 +90,7 @@ namespace
         std::string bytes = "ERAN";
         u32(bytes, joints.size());
         u32(bytes, weaponAxes ? 3 : 1);
-        u32(bytes, 13);
+        u32(bytes, 17);
         for (const auto joint : joints)
             name(bytes, joint);
         name(bytes, "Head");
@@ -105,10 +106,39 @@ namespace
         };
         for (std::string_view clip : {
                  "a000_000000", "a012_000000", "a013_000000", "a036_032505", "a036_032500",
-                 "a000_000100", "a015_000100", "a012_020100", "a012_020200",
+                 "a000_000100", "a010_000100", "a012_000100", "a013_000100", "a015_000100",
+                 "a000_004200", "a012_020100", "a012_020200",
                  "a014_000000", "a044_036010", "a044_036020", "a044_036000" })
         {
             auto positions = p;
+            const bool wind = windingArm && (clip == "a036_032500" || clip == "a036_032505");
+            if (wind)
+            {
+                const osg::Vec3f shift(0, .12f, 0);
+                positions[13] += shift;
+                positions[22] += shift;
+                for (std::size_t j = 31; j < positions.size(); ++j)
+                    positions[j] += shift;
+            }
+            if (clip.ends_with("_000100"))
+            {
+                // A visible raised arm distinguishes the guard layers from
+                // the generic impact clip, whose arms are deliberately low.
+                positions[8] = { -.25f, .1f, 1.2f };
+                positions[9] = { -.15f, .35f, 1.5f };
+                if (clip != "a000_000100")
+                {
+                    positions[12] = { .25f, .1f, 1.2f };
+                    positions[13] = { .15f, .35f, 1.5f };
+                }
+                for (int side = 0; side != 2; ++side)
+                {
+                    const int hand = side == 0 ? 9 : 13;
+                    for (int finger = 0; finger != 7; ++finger)
+                        positions[24 + side * 7 + finger] += positions[hand] - p[hand];
+                    positions[side == 0 ? 23 : 22] += positions[hand] - p[hand];
+                }
+            }
             if (clip == "a012_000000" || clip == "a012_020100" || clip == "a012_020200")
             {
                 positions[8] = { -.20f, .16f, 1.2f };
@@ -130,9 +160,13 @@ namespace
             }
             name(bytes, clip);
             f32(bytes, 6.f);
-            u32(bytes, 2);
-            for (int frame = 0; frame != 2; ++frame)
+            const int frames = wind ? 181 : 2;
+            u32(bytes, frames);
+            for (int frame = 0; frame != frames; ++frame)
             {
+                osg::Vec3f armAxis = positions[12] - positions[11];
+                armAxis.normalize();
+                const osg::Quat armRotation(wind ? frame * 3.14159265358979323846f / 180.f : 0.f, armAxis);
                 const osg::Quat bodyRotation(animatedBody && frame == 1 ? .8f : 0.f, osg::Vec3f(0, 0, 1));
                 const osg::Quat torsoRotation(
                     windingTorso && clip == "a036_032500" ? .4f : 0.f, osg::Vec3f(0, 0, 1));
@@ -141,6 +175,8 @@ namespace
                     // Shift the weapon pivot, while the hand itself stays still.
                     osg::Vec3f position = positions[j]
                         + (j == 22 && frame == 1 ? osg::Vec3f(0, .32f, 0) : osg::Vec3f());
+                    if (j == 13 || j == 22 || j >= 31)
+                        position = positions[12] + armRotation * (position - positions[12]);
                     if ((j >= 6 && j <= 13) || j >= 22)
                         position = torsoRotation * position;
                     vector(bodyRotation * position);
@@ -205,6 +241,43 @@ namespace
         void apply(osg::MatrixTransform& node) override { apply(static_cast<osg::Node&>(node)); }
     };
 
+    struct FirstPersonNeck : SceneUtil::NodeCallback<FirstPersonNeck, osg::MatrixTransform*>
+    {
+        osg::Node* mRoot = nullptr;
+        osg::Quat mPitch;
+
+        void operator()(osg::MatrixTransform* node, osg::NodeVisitor* visitor)
+        {
+            // Match the native RotateController's post-pose model-space
+            // rotation. It writes the matrix, not NIF's decomposed rotation.
+            osg::Matrix matrix = node->getMatrix();
+            const osg::Quat world = osg::computeLocalToWorld(node->getParentalNodePaths(mRoot).front()).getRotate();
+            matrix.setRotate(world * mPitch * world.inverse() * matrix.getRotate());
+            node->setMatrix(matrix);
+            traverse(node, visitor);
+        }
+    };
+
+    osg::ref_ptr<osg::Geometry> spearGeometry(bool embedded = false, float halfLength = 50.f)
+    {
+        osg::ref_ptr<osg::Vec3Array> vertices = new osg::Vec3Array;
+        const osg::Quat basis(-1.57079632679, osg::Vec3f(1, 0, 0));
+        for (unsigned i = 0; i < 8; ++i)
+        {
+            osg::Vec3f point(i & 1 ? 1.25f : -.75f, i & 2 ? halfLength : -halfLength, i & 4 ? 1.5f : -.5f);
+            vertices->push_back(embedded ? basis.inverse() * point : point);
+        }
+        osg::ref_ptr<osg::DrawElementsUInt> indices = new osg::DrawElementsUInt(GL_TRIANGLES);
+        for (const auto& face : { std::array<unsigned, 4>{0, 1, 3, 2}, {4, 6, 7, 5}, {0, 4, 5, 1},
+                 {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 5, 7, 3} })
+            for (unsigned index : { face[0], face[1], face[2], face[0], face[2], face[3] })
+                indices->push_back(index);
+        osg::ref_ptr<osg::Geometry> result = new osg::Geometry;
+        result->setVertexArray(vertices);
+        result->addPrimitiveSet(indices);
+        return result;
+    }
+
     struct Rig
     {
         osg::ref_ptr<osg::Group> mRoot = new osg::Group;
@@ -225,7 +298,7 @@ namespace
         }
 
         explicit Rig(std::shared_ptr<const EldenCombat::AnimationBank> bank, bool armHelper = false,
-            bool stockFingers = false, bool requireFullBody = false)
+            bool stockFingers = false, bool requireFullBody = false, bool embeddedSpear = false)
         {
             auto* pelvis = bone("bip01 pelvis", mRoot.get(), {0, 0, 60});
             auto* spine = bone("bip01 spine", pelvis, {0, 0, 10});
@@ -282,10 +355,13 @@ namespace
                 bone("bip01 r finger1", mHand.get(), {4, -1, 0});
                 bone("bip01 r finger2", mHand.get(), {4, 1, 0});
             }
-            mWeapon = bone("weapon bone", mHand.get(), mNative->mTranslation);
+            mWeapon = bone(embeddedSpear ? "hircine_spear" : "weapon bone",
+                embeddedSpear ? mRoot.get() : mHand.get(), mNative->mTranslation);
             mWeapon->setRotation(mNative->mRotation);
+            if (embeddedSpear)
+                mWeapon->addChild(spearGeometry(true));
             mAnimation = std::make_unique<MWRender::EldenAnimation>(
-                mNodes, *mRoot, std::move(bank), requireFullBody);
+                mNodes, *mRoot, std::move(bank), requireFullBody, embeddedSpear);
             check(mAnimation->valid(), "fixture rig was rejected");
             // Model base_anim's permanent controller: restore must precede it.
             mWeapon->addUpdateCallback(mNative.get());
@@ -487,6 +563,16 @@ namespace
         MWRender::EldenAnimation degenerate(humanoid.mNodes, *humanoid.mRoot, bank, true);
         check(!degenerate.valid(), "zero-length creature limb was accepted");
         calf->setTranslation(calfTranslation);
+
+        // A quadruped can expose every same Bip01 label; anatomy must still
+        // reject its horizontal torso instead of turning it into a human.
+        auto* spine = static_cast<NifOsg::MatrixTransform*>(humanoid.mNodes.at("bip01 spine").get());
+        const osg::Quat spineRotation = spine->getMatrix().getRotate();
+        spine->setRotation(osg::Quat(1.57079632679, osg::Vec3f(1, 0, 0)));
+        MWRender::EldenAnimation quadruped(humanoid.mNodes, *humanoid.mRoot, bank, true);
+        check(!quadruped.valid() && quadruped.controllers().empty(),
+            "horizontal creature torso with humanoid bone names was accepted");
+        spine->setRotation(spineRotation);
     }
 
     void upperBodyOverNativeLocomotion()
@@ -689,6 +775,119 @@ namespace
         }
     }
 
+    void spearGripAttachments(std::shared_ptr<const EldenCombat::AnimationBank> bank)
+    {
+        {
+            Rig incomplete(bank);
+            MWRender::EldenAnimation rejected(incomplete.mNodes, *incomplete.mRoot, bank, true, true);
+            check(!rejected.valid(), "incomplete Guile replacement rig received humanoid poses");
+        }
+        {
+            Rig missingSpear(bank, false, true);
+            MWRender::EldenAnimation rejected(missingSpear.mNodes, *missingSpear.mRoot, bank, true, true);
+            check(!rejected.valid(), "Guile replacement without its embedded spear lost native fallback");
+        }
+        {
+            Rig missingGeometry(bank, false, true, true, true);
+            missingGeometry.mAnimation->clear();
+            missingGeometry.mWeapon->removeChildren(0, missingGeometry.mWeapon->getNumChildren());
+            MWRender::EldenAnimation rejected(missingGeometry.mNodes, *missingGeometry.mRoot, bank, true, true);
+            check(!rejected.valid(), "unusable embedded spear geometry lost native fallback");
+        }
+        for (const auto [embedded, twoHanded] : {
+                 std::pair{ false, false }, std::pair{ false, true },
+                 std::pair{ true, false }, std::pair{ true, true } })
+            for (bool reversed : { false, true })
+            {
+                Rig rig(bank, false, true, true, embedded);
+                check(rig.mAnimation->hasEmbeddedSpear() == embedded, "embedded spear capability mismatch");
+                const auto rightBind = rig.modelMatrix(rig.mHand);
+                const osg::Vec3f palm = ((rig.modelMatrix(rig.mNodes.at("bip01 r finger1")).getTrans()
+                    + rig.modelMatrix(rig.mNodes.at("bip01 r finger2")).getTrans()) * .5f)
+                    * osg::Matrixf::inverse(rightBind);
+                const auto leftHand = rig.mNodes.at("bip01 l hand");
+                const osg::Vec3f leftPalm = ((rig.modelMatrix(rig.mNodes.at("bip01 l finger1")).getTrans()
+                    + rig.modelMatrix(rig.mNodes.at("bip01 l finger2")).getTrans()) * .5f)
+                    * osg::Matrixf::inverse(rig.modelMatrix(leftHand));
+                if (reversed && embedded)
+                {
+                    rig.mRoot->removeChild(rig.mWeapon);
+                    rig.mRoot->insertChild(0, rig.mWeapon);
+                }
+                else if (reversed)
+                {
+                    auto* leftUpper = rig.mNodes.at("bip01 l upperarm").get();
+                    auto* parent = leftUpper->getParent(0);
+                    osg::ref_ptr<osg::Node> keep = leftUpper;
+                    parent->removeChild(leftUpper);
+                    parent->insertChild(0, leftUpper);
+                }
+                osg::ref_ptr<FirstPersonNeck> neck = new FirstPersonNeck;
+                neck->mRoot = rig.mRoot;
+                rig.mNodes.at("bip01 neck")->addUpdateCallback(neck);
+                for (float length : { 40.f, 90.f })
+                {
+                    rig.mWeapon->removeChildren(0, rig.mWeapon->getNumChildren());
+                    rig.mWeapon->addChild(spearGeometry(embedded, length));
+                    const osg::Quat basis = embedded
+                        ? osg::Quat(-1.57079632679, osg::Vec3f(1, 0, 0)) : osg::Quat();
+                    const osg::Vec3f contact = basis.inverse() * osg::Vec3f(.25f, -.2f * length, .5f);
+                    for (float scale : { .5f, 1.f, 2.f })
+                        for (float pitch : { -.7f, 0.f, .7f })
+                            for (int frame = 0; frame != 8; ++frame)
+                            {
+                                rig.mNative->mScale = scale;
+                                neck->mPitch = osg::Quat(pitch, osg::Vec3f(-1, 0, 0));
+                                rig.play(frame % 2 ? "a036_032500" : "a036_032505", 0.f, 1.f / 60.f,
+                                    !embedded, .4f, twoHanded ? "a013_000000" : "a000_000000");
+                                const osg::Vec3f expected = (embedded ? palm : rig.mNative->mTranslation)
+                                    * rig.modelMatrix(rig.mHand);
+                                if (twoHanded)
+                                {
+                                    const auto inverseWeapon = osg::Matrixf::inverse(rig.modelMatrix(rig.mWeapon));
+                                    const osg::Vec3f right = basis * (expected * inverseWeapon);
+                                    const osg::Vec3f left
+                                        = basis * ((leftPalm * rig.modelMatrix(leftHand)) * inverseWeapon);
+                                    const float front = std::max(right.y(), left.y());
+                                    const float rear = std::min(right.y(), left.y());
+                                    check(rear >= -.92f * length - 2e-4f,
+                                        "lower spear grip left the rear hand past the butt");
+                                    if (front - rear <= .72f * length)
+                                        check(std::abs(front + .2f * length) < 2e-4f,
+                                            "front hand is not below the spear midpoint");
+                                    else
+                                        check(std::abs(rear + .92f * length) < 2e-4f,
+                                            "short spear did not preserve its rear palm margin");
+                                    check(std::abs(right.x() - .25f) < 2e-4f && std::abs(right.z() - .5f) < 2e-4f,
+                                        "moving the front grip below midpoint displaced the shaft sideways");
+                                }
+                                else
+                                    check(close(contact * rig.modelMatrix(rig.mWeapon), expected),
+                                        "spear grip missed the palm during scaling, aiming or blending");
+                                const osg::Matrixf before = rig.modelMatrix(rig.mWeapon);
+                                rig.update();
+                                check(close(before.getTrans(), rig.modelMatrix(rig.mWeapon).getTrans()),
+                                    "paused spear translation accumulated");
+                            }
+                }
+                rig.mAnimation->clear();
+                check(close(rig.mWeapon->getMatrix().getTrans(), rig.mNative->mTranslation),
+                    "leaving imported poses did not restore native spear translation");
+                check(close(rig.mWeapon->mRotationScale.toOsgMatrix().getRotate(), rig.mNative->mRotation),
+                    "leaving imported poses did not restore native spear rotation");
+                if (!embedded)
+                {
+                    rig.play("a036_032505", 0, 1, false);
+                    check(close(rig.mWeapon->getMatrix().getTrans(), rig.mNative->mTranslation),
+                        "non-spear inherited the grip correction");
+                    rig.mWeapon->removeChildren(0, rig.mWeapon->getNumChildren());
+                    rig.play("a036_032505");
+                    check(close(rig.mWeapon->getMatrix().getTrans(), rig.mNative->mTranslation),
+                        "missing geometry retained the old spear grip");
+                }
+            }
+    }
+
     void regression()
     {
         Rig rig(fixtureBank());
@@ -736,6 +935,65 @@ namespace
         noAxes.play("a036_032505");
         check(close(noAxes.mWeapon->mRotationScale.toOsgMatrix().getRotate(), noAxes.mNative->mRotation),
             "bank without weapon axes lost native fallback");
+    }
+
+    void firstPersonSpear(std::shared_ptr<const EldenCombat::AnimationBank> bank, bool actual = false)
+    {
+        const std::array<std::string_view, 4> clips{
+            "a036_030500", "a036_030505", "a036_032500", "a036_032505" };
+        for (bool helper : { false, true })
+        {
+            Rig reference(bank, helper);
+            Rig aimed(bank, helper);
+            osg::ref_ptr<FirstPersonNeck> neck = new FirstPersonNeck;
+            neck->mRoot = aimed.mRoot;
+            aimed.mNodes.at("bip01 neck")->addUpdateCallback(neck);
+            neck->mPitch = osg::Quat(.6f, osg::Vec3f(-1, 0, 0));
+            reference.play("a036_032505", 0.f, .01f);
+            aimed.play("a036_032505", 0.f, .01f);
+            check(close(aimed.tip(), neck->mPitch * reference.tip()),
+                "entering first-person spear posing duplicated native neck pitch");
+            for (std::string_view clip : clips)
+            {
+                const auto* animation = bank->find(clip);
+                if (!animation && !actual)
+                    continue;
+                check(animation != nullptr, "first-person spear clip missing");
+                for (float frame : { 0.f, (animation->mFrames - 1) * .5f, float(animation->mFrames - 1) })
+                    for (float yaw : { 0.f, .7f })
+                        for (float pitch : { -.9f, -.3f, 0.f, .3f, .9f })
+                            for (float factor : { .75f, 1.f })
+                            {
+                                neck->mPitch = osg::Quat(pitch * factor, osg::Vec3f(-1, 0, 0));
+                                reference.play(clip, frame, 1.f, true, yaw);
+                                aimed.play(clip, frame, 1.f, true, yaw);
+                                check(close(aimed.tip(), neck->mPitch * reference.tip()),
+                                    "first-person spear cancels the neck's up/down aim");
+                                check(close(aimed.modelRotation(aimed.mHand),
+                                          reference.modelRotation(reference.mHand) * neck->mPitch),
+                                    "first-person fixture did not pitch the weapon hand");
+                                check(close(aimed.mWeapon->getMatrix().getTrans(), aimed.mNative->mTranslation),
+                                    "first-person aim moved the native spear attachment");
+                                check(std::abs(aimed.mWeapon->mScale - aimed.mNative->mScale) < 1e-5,
+                                    "first-person aim changed spear scale");
+                            }
+            }
+
+            // Move the camera while an attack transition is in progress. Its
+            // pitch must not become part of the saved animation blend pose.
+            for (int frame = 0; frame < 30; ++frame)
+            {
+                neck->mPitch = osg::Quat(-.8f + .05f * frame, osg::Vec3f(-1, 0, 0));
+                const std::string_view clip = frame % 2 ? "a036_032505" : "a036_032500";
+                reference.play(clip, 0.f, 1.f / 60.f, true, .4f);
+                aimed.play(clip, 0.f, 1.f / 60.f, true, .4f);
+                check(close(aimed.tip(), neck->mPitch * reference.tip()),
+                    "first-person spear accumulated camera pitch during an attack blend");
+            }
+            aimed.mAnimation->clear();
+            check(close(aimed.mWeapon->mRotationScale.toOsgMatrix().getRotate(), aimed.mNative->mRotation),
+                "first-person spear failed to restore the native attachment");
+        }
     }
 
     void repeatedActions()
@@ -919,6 +1177,88 @@ namespace
         shield.update();
         check(close(shield.modelRotation(shield.mShield.get()) * osg::Vec3f(0, 0, 1), {0, 1, 0}),
             "two-handed shield guard did not align its shield attachment");
+    }
+
+    void guardRecoilLayers(const std::shared_ptr<const EldenCombat::AnimationBank>& bank)
+    {
+        const auto* recoil = bank->find("a000_004200");
+        check(recoil != nullptr, "guard recoil clip missing");
+        for (std::string_view guard : { "a000_000100", "a010_000100", "a012_000100",
+                 "a013_000100", "a015_000100" })
+        {
+            const bool bothArms = guard != "a000_000100";
+            check(bank->find(guard), "equipment guard layer missing");
+            for (std::size_t frame = 0; frame < recoil->mFrames; ++frame)
+            {
+                Rig held(bank, false, true), impact(bank, false, true), unguarded(bank, false, true);
+                const auto play = [&](Rig& rig, std::string_view clip, bool layers) {
+                    check(rig.mAnimation->play(clip, static_cast<float>(frame), false, 1.f, 0.f,
+                              layers ? guard : "", layers && bothArms ? guard : ""),
+                        "guard impact fixture pose rejected");
+                    rig.update();
+                };
+                play(held, "a000_000000", true);
+                play(impact, "a000_004200", true);
+                play(unguarded, "a000_004200", false);
+                bool raised = false;
+                for (const char* side : { "l", "r" })
+                {
+                    if (side[0] == 'r' && !bothArms)
+                        continue;
+                    for (const char* joint : { "upperarm", "forearm", "hand" })
+                    {
+                        const std::string name = std::string("bip01 ") + side + " " + joint;
+                        const auto rotation = impact.modelRotation(impact.mNodes.at(name).get());
+                        const auto expected = held.modelRotation(held.mNodes.at(name).get());
+                        // Elbow-plane stabilization can adjust twist as the
+                        // torso recoils. The limb's direction must still come
+                        // from the equipment's raised guard, never the low arm
+                        // in the generic reaction track.
+                        const osg::Vec3f along(side[0] == 'l' ? -1.f : 1.f, 0, 0);
+                        check((rotation * along - expected * along).length() < .005f,
+                            "blocked-hit recoil lost its authored guard arm direction");
+                        raised |= !close(rotation, unguarded.modelRotation(unguarded.mNodes.at(name).get()));
+                    }
+                }
+                check(raised, "guard fixture cannot detect the previous dropped-arm recoil");
+                for (const char* name : { "bip01 pelvis", "bip01 l thigh", "bip01 r thigh" })
+                    check(close(impact.modelMatrix(impact.mNodes.at(name).get()).getTrans(),
+                              unguarded.modelMatrix(unguarded.mNodes.at(name).get()).getTrans())
+                            && close(impact.modelRotation(impact.mNodes.at(name).get()),
+                                unguarded.modelRotation(unguarded.mNodes.at(name).get())),
+                        "guard layer erased the source impact's lower-body recoil");
+                if (guard == "a000_000100" || guard == "a015_000100")
+                    check(close(impact.modelRotation(impact.mShield), held.modelRotation(held.mShield)),
+                        "blocked-hit recoil lost its shield attachment alignment");
+            }
+        }
+    }
+
+    void deflectionNativeFallback(const std::shared_ptr<const EldenCombat::AnimationBank>& bank)
+    {
+        Rig rig(bank, false, true);
+        osg::ref_ptr<NativeWeapon> recoil = new NativeWeapon;
+        recoil->mRotation = osg::Quat(.9f, osg::Vec3f(0, 0, 1));
+        recoil->mTranslation = rig.mHand->getMatrix().getTrans();
+        recoil->mScale = 1.f;
+        // Native reaction controllers run before imported pose callbacks, just
+        // like the engine. A stale attack override would erase this recoil.
+        recoil->setNestedCallback(rig.mHand->getUpdateCallback());
+        rig.mHand->setUpdateCallback(recoil.get());
+        rig.play("a036_032500", 10.f, 1.f, false, 0.f, {});
+        check(!close(rig.mHand->mRotationScale.toOsgMatrix().getRotate(), recoil->mRotation),
+            "deflection fixture did not start with an imported attack override");
+        rig.mAnimation->clear();
+        rig.update();
+        check(close(rig.mHand->mRotationScale.toOsgMatrix().getRotate(), recoil->mRotation),
+            "clearing the blocked attack failed to expose native recoil immediately");
+        // The subsequent pose update has no imported repelled clip. It must
+        // keep native recoil, including a frozen zero-duration hit-stop update.
+        check(!rig.mAnimation->play({}, 0.f, false, 0.f),
+            "empty deflection animation unexpectedly retained an imported pose");
+        rig.update();
+        check(close(rig.mHand->mRotationScale.toOsgMatrix().getRotate(), recoil->mRotation),
+            "hit-stop restored the interrupted attack over native deflection");
     }
 
     void fingerCurl(const std::shared_ptr<const EldenCombat::AnimationBank>& bank, std::string_view stance)
@@ -1161,11 +1501,133 @@ namespace
             "removing the equipped mesh retained an obsolete support contact");
     }
 
+    void comboPlaneContinuity()
+    {
+        Rig rig(fixtureBank(true, false, false, true), false, true);
+        rig.play("a036_032500", 0.f, 1.f, false, 0.f, "");
+        for (int frame = 1; frame <= 180; ++frame)
+            rig.play("a036_032500", float(frame), 1.f / 60.f, false, 0.f, "");
+        std::array<osg::Quat, 3> before;
+        constexpr std::array names{ "bip01 r upperarm", "bip01 r forearm", "bip01 r hand" };
+        for (std::size_t i = 0; i < names.size(); ++i)
+            before[i] = rig.mNodes.at(names[i])->getMatrix().getRotate();
+        // The next combo starts at the exact displayed pose. Its different
+        // clip name must not choose a fresh elbow-plane hemisphere and turn
+        // the upper arm and local wrist through 180 degrees during the fade.
+        rig.play("a036_032505", 180.f, 1.f, false, 0.f, "");
+        for (std::size_t i = 0; i < names.size(); ++i)
+            check(close(before[i], rig.mNodes.at(names[i])->getMatrix().getRotate()),
+                "combo transition flipped the shoulder or local wrist at an identical source pose");
+    }
+
+    float wristTwist(const osg::Quat& rotation, const osg::Quat& bind, const osg::Vec3f& axis)
+    {
+        const osg::Quat delta = bind.inverse() * rotation;
+        const float axial = osg::Vec3f(delta.x(), delta.y(), delta.z()) * axis;
+        return 2.f * std::abs(std::remainder(std::atan2(axial, float(delta.w())), 3.14159265358979323846f));
+    }
+
+    float comboArmSequence(Rig& rig, Rig& authored,
+        const std::shared_ptr<const EldenCombat::AnimationBank>& bank, float fps, int sequence)
+    {
+        float maximumWrist = 0.f;
+        const bool spear = sequence != 0;
+        const std::string_view grip = !spear ? "a000_000000"
+            : sequence == 1 ? "a010_000000" : "a013_000000";
+        // Imported cancel windows: buffered longsword light
+        // attacks chain at 17/18 frames; a roll attacks at 18.
+        const std::vector<std::pair<std::string_view, float>> clips = !spear
+            ? std::vector<std::pair<std::string_view, float>>{
+                { "a023_030000", 17.f }, { "a023_030010", 18.f }, { "a023_030020", 65.f } }
+            : std::vector<std::pair<std::string_view, float>>{
+                { "a000_027100", 18.f }, { sequence == 1 ? "a036_030300" : "a036_032300", 55.f } };
+        const osg::Quat handBind = rig.mHand->getMatrix().getRotate();
+        osg::Vec3f axis = rig.mHand->getMatrix().getTrans();
+        axis.normalize();
+        auto* upper = rig.mNodes.at("bip01 r upperarm").get();
+        auto* forearm = rig.mNodes.at("bip01 r forearm").get();
+        const auto segment = [&](osg::Node* a, osg::Node* b) {
+            return (rig.modelMatrix(a).getTrans()
+                - rig.modelMatrix(b).getTrans()).length();
+        };
+        const float upperLength = segment(upper, forearm);
+        const float lowerLength = segment(forearm, rig.mHand);
+        const auto position = [&](osg::Node* node) { return rig.modelMatrix(node).getTrans(); };
+        const osg::Vec3f bindUpper = position(forearm) - position(upper);
+        const osg::Vec3f bindLower = position(rig.mHand) - position(forearm);
+        const osg::Vec3f bindUp = MWRender::EldenPose::unit(
+            position(rig.mNodes.at("bip01 neck")) - position(rig.mNodes.at("bip01 pelvis")), { 0, 0, 1 });
+        const osg::Vec3f bindRight = MWRender::EldenPose::unit(
+            position(upper) - position(rig.mNodes.at("bip01 l upperarm")), { 1, 0, 0 });
+        const osg::Vec3f bindChest = MWRender::EldenPose::unit(bindUp ^ bindRight, { 0, 1, 0 });
+        const osg::Vec3f bindNormal = MWRender::EldenPose::unit(bindUpper
+            ^ MWRender::EldenPose::bendSecondary(bindUpper, bindLower, bindUpper, bindUpper ^ bindChest), bindRight);
+        const osg::Vec3f localNormal = rig.modelRotation(upper).inverse() * bindNormal;
+        std::vector<float> sample;
+        const auto sourcePosition = [&](std::string_view joint) {
+            const auto offset = bank->jointOffset(joint);
+            check(offset.has_value(), "combo fixture lacks an arm joint");
+            return osg::Vec3f(-sample[*offset], sample[*offset + 2], sample[*offset + 1]);
+        };
+        rig.play(grip, 0.f, 1.f, spear, 0.f, grip);
+        for (const auto& [name, end] : clips)
+        {
+            const auto* clip = bank->find(name);
+            check(clip, "reported combo regression clip missing");
+            for (float frame = 0.f; frame < end; frame += 30.f / fps)
+            {
+                rig.play(name, frame, 1.f / fps, spear, 0.f, grip);
+                const float twist = wristTwist(rig.mHand->getMatrix().getRotate(), handBind, axis);
+                maximumWrist = std::max(maximumWrist, twist);
+                check(twist < .524f,
+                    "longsword chain or spear roll concentrated forearm pronation into the wrist");
+                check(std::abs(segment(upper, forearm) - upperLength) < .0001f
+                        && std::abs(segment(forearm, rig.mHand) - lowerLength) < .0001f,
+                    "combo wrist correction changed a native arm segment length");
+                if (name == "a036_032300" && frame >= 20.f && frame <= 24.f)
+                {
+                    bank->sample(*clip, frame, false, sample);
+                    const osg::Vec3f sourceUpper = sourcePosition("R_Forearm") - sourcePosition("R_UpperArm");
+                    const osg::Vec3f sourceLower = sourcePosition("R_Hand") - sourcePosition("R_Forearm");
+                    const osg::Vec3f expected = MWRender::EldenPose::unit(sourceUpper ^ sourceLower, { 0, 0, 1 });
+                    check((rig.modelRotation(upper) * localNormal) * expected > .99f,
+                        "spear roll follow-up retained an inverted shoulder on a deeply bent elbow");
+                }
+                if (frame >= clip->mBlendFrames)
+                {
+                    authored.play(name, frame, 1.f, spear, 0.f, grip);
+                    check(close(rig.modelRotation(rig.mHand), authored.modelRotation(authored.mHand)),
+                        "combo wrist correction changed the authored palm orientation");
+                }
+            }
+        }
+        return maximumWrist;
+    }
+
+    void comboArmPoses(const std::shared_ptr<const EldenCombat::AnimationBank>& bank)
+    {
+        float maximumWrist = 0.f;
+        for (float fps : { 30.f, 60.f, 120.f })
+            for (bool helper : { false, true })
+                for (int sequence = 0; sequence < 3; ++sequence)
+                {
+                    Rig rig(bank, helper, true), authored(bank, helper, true);
+                    maximumWrist = std::max(maximumWrist, comboArmSequence(rig, authored, bank, fps, sequence));
+                }
+        std::cout << "Longsword and spear-roll maximum wrist twist: "
+                  << maximumWrist * 180.f / 3.14159265358979323846f << " degrees\n";
+    }
+
     void realClips(const char* path)
     {
         std::ifstream file(path, std::ios::binary);
         auto bank = std::make_shared<EldenCombat::AnimationBank>(file);
+        spearGripAttachments(bank);
+        firstPersonSpear(bank, true);
         shieldGuard(bank, true);
+        guardRecoilLayers(bank);
+        deflectionNativeFallback(bank);
+        comboArmPoses(bank);
         swordSupportGrip(bank);
         for (const std::string_view stance : { "a000_000000", "a010_000000", "a012_000000", "a013_000000" })
             fingerCurl(bank, stance);
@@ -1209,12 +1671,19 @@ namespace
     }
 }
 
+#include "eldenring-test-left-grip.hpp"
+
 int main(int argc, char** argv)
 {
     try
     {
         regression();
+        leftGripTests(fixtureBank());
+        spearGripAttachments(fixtureBank());
+        firstPersonSpear(fixtureBank());
         shieldGuard(fixtureBank());
+        guardRecoilLayers(fixtureBank());
+        deflectionNativeFallback(fixtureBank());
         bowAttachments(fixtureBank(true, true));
         shieldFallbacks();
         humanoidCreatureRigs();
@@ -1222,13 +1691,16 @@ int main(int argc, char** argv)
         poseBlending();
         directionReversals();
         repeatedActions();
+        comboPlaneContinuity();
         fingerCurl(fixtureBank(), "a013_000000");
         swordSupportGrip();
         if (argc > 1)
         {
             realClips(argv[1]);
             std::ifstream input(argv[1], std::ios::binary);
-            bowAttachments(std::make_shared<EldenCombat::AnimationBank>(input));
+            const auto actualBank = std::make_shared<EldenCombat::AnimationBank>(input);
+            bowAttachments(actualBank);
+            leftGripTests(actualBank);
         }
         std::cout << "Weapon attachment retarget validation passed: " << checks << " assertions\n";
     }

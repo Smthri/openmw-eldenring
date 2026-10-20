@@ -24,6 +24,7 @@ namespace Settings
         SettingValue<bool> mShowMeleeInfo{ mIndex, "Game", "show melee info" };
         SettingValue<bool> mShowEnchantChance{ mIndex, "Game", "show enchant chance" };
         SettingValue<bool> mBestAttack{ mIndex, "Game", "best attack" };
+        SettingValue<bool> mDisableParalysis{ mIndex, "Game", "disable paralysis" };
         SettingValue<bool> mEldenRingCombat{ mIndex, "Game", "elden ring combat" };
         SettingValue<bool> mEldenRingMusic{ mIndex, "Game", "elden ring music" };
         SettingValue<bool> mEldenRingWeightBasedRollDistance{ mIndex, "Game", "elden ring weight based roll distance" };

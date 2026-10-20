@@ -22,15 +22,18 @@ namespace MWRender
         // Creatures require a complete humanoid body; NPC first-person rigs
         // may omit entire limbs as well as optional torso/finger/toe joints.
         EldenAnimation(const Animation::NodeMap& nodes, osg::Group& objectRoot,
-            std::shared_ptr<const EldenCombat::AnimationBank> bank, bool requireFullBody = false);
+            std::shared_ptr<const EldenCombat::AnimationBank> bank, bool requireFullBody = false,
+            bool embeddedSpear = false);
         ~EldenAnimation();
 
         bool valid() const;
+        bool hasEmbeddedSpear() const;
         // An upper-body pose keeps native locomotion and all translations.
         bool play(std::string_view clip, float frame, bool loop, float duration, float yaw = 0.f,
             std::string_view leftArmClip = {}, std::string_view rightArmClip = {}, std::string_view gripClip = {},
             bool alignSpear = false, bool twoHandedSword = false, bool upperBodyOnly = false,
-            bool bow = false, float pitch = 0.f, float bowDraw = 0.f);
+            bool bow = false, float pitch = 0.f, float bowDraw = 0.f, bool leftHanded = false,
+            bool offhandWeapon = false, bool offhandSpear = false);
         void clear();
 
         const ActiveControllersVector& controllers() const { return mControllers; }

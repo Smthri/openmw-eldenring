@@ -4,6 +4,8 @@
 #include <iterator>
 
 #include <components/esm3/inventorystate.hpp>
+#include <components/esm3/loadweap.hpp>
+#include <components/settings/values.hpp>
 
 #include "../mwbase/environment.hpp"
 #include "../mwbase/windowmanager.hpp"
@@ -177,8 +179,23 @@ void MWWorld::InventoryStore::equip(int slot, const ContainerStoreIterator& iter
     if (std::find(slots.first.begin(), slots.first.end(), slot) == slots.first.end())
         throw std::runtime_error("invalid slot");
 
+    // A weapon reference belongs to exactly one hand. This also covers explicit
+    // Lua equipment changes and primary hotkeys selecting the current off-hand.
+    // Move an equipped reference without restacking it or unsetting OnPCEquip.
+    const bool handSlot = slot == Slot_CarriedRight || slot == Slot_CarriedLeft;
+    const bool handWeapon = handSlot && iterator->getType() == ESM::Weapon::sRecordId;
+    if (handSlot && mSlots[slot] == iterator)
+        return;
+    resetEldenGrip(slot);
     if (mSlots[slot] != end())
-        unequipSlot(slot);
+        unequipSlot(slot, !handWeapon);
+
+    if (handWeapon)
+    {
+        const int other = slot == Slot_CarriedRight ? Slot_CarriedLeft : Slot_CarriedRight;
+        if (mSlots[other] == iterator)
+            mSlots[other] = end();
+    }
 
     // unstack item pointed to by iterator if required
     if (iterator != end() && !slots.second
@@ -615,6 +632,7 @@ MWWorld::ContainerStoreIterator MWWorld::InventoryStore::unequipSlot(int slot, b
     {
         ContainerStoreIterator retval = it;
 
+        resetEldenGrip(slot);
         // empty this slot
         mSlots[slot] = end();
 
@@ -710,6 +728,22 @@ void MWWorld::InventoryStore::fireEquipmentChangedEvent()
         MWBase::Environment::get().getWindowManager()->getInventoryWindow()->updateItemView();
     }
     */
+}
+
+void MWWorld::InventoryStore::resetEldenGrip(int slot)
+{
+    if ((slot != Slot_CarriedRight && slot != Slot_CarriedLeft) || !Settings::game().mEldenRingCombat)
+        return;
+    const Ptr& actor = getPtr();
+    if (actor.isEmpty() || !actor.getClass().isActor())
+        return;
+    // Hand changes through inventory, hotkeys, Lua or item removal all release
+    // the old grip before equipment listeners see the replacement armament.
+    auto& stats = actor.getClass().getCreatureStats(actor);
+    stats.getEldenGripTransition().reset();
+    auto& input = stats.getEldenCombatInput();
+    input.mTwoHanded = false;
+    input.mTwoHandedLeft = false;
 }
 
 void MWWorld::InventoryStore::clear()

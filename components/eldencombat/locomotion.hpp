@@ -6,6 +6,20 @@
 
 namespace EldenCombat
 {
+    // A reflected left-hand weapon pose needs the opposite source strafe;
+    // forward/backward and sprint direction still use the actor's input frame.
+    inline unsigned int mirroredLocomotionId(unsigned int animationId)
+    {
+        for (const unsigned int base : { 20000u, 20100u, 22100u, 320000u, 320100u })
+        {
+            if (animationId == base + 2)
+                return base + 3;
+            if (animationId == base + 3)
+                return base + 2;
+        }
+        return animationId;
+    }
+
     struct PlanarMovement
     {
         float mX = 0.f;
@@ -15,6 +29,22 @@ namespace EldenCombat
     inline float movementSpeed(float maximumSpeed, float inputMagnitude, bool strafing, bool eldenActive)
     {
         return maximumSpeed * inputMagnitude * (strafing && !eldenActive ? 0.75f : 1.f);
+    }
+
+    // Creature::getRunSpeed deliberately returns its walking speed. Native
+    // playback divides by walk velocity, leaving the run/walk root-motion
+    // ratio to supply its running pace. Imported poses bypass native root
+    // motion, so preserve that ratio in the requested velocity instead.
+    // Use the forward clips for every direction, as imported strafing/backing
+    // must retain the same travel speed. Missing/invalid keys keep the current
+    // speed, including creatures whose running clip falls back to walking.
+    inline float creatureRunSpeedMultiplier(float walkVelocity, float runVelocity)
+    {
+        if (!std::isfinite(walkVelocity) || !std::isfinite(runVelocity)
+            || walkVelocity <= 1.f || runVelocity <= 1.f)
+            return 1.f;
+        const float multiplier = runVelocity / walkVelocity;
+        return std::isfinite(multiplier) ? multiplier : 1.f;
     }
 
     // Compute this from the current facing after Lua has merged actor controls.

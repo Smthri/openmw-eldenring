@@ -113,6 +113,7 @@ namespace MWPhysics
         const bool mIsPlayer;
         const bool mPreserveLandingMomentum;
         const bool mHasMovementIntent;
+        bool mCheckGroundRecovery = false;
     };
 
     struct ProjectileFrameData
@@ -348,6 +349,7 @@ namespace MWPhysics
         std::size_t mSimulationsCounter = 0;
         std::array<std::vector<Simulation>, 2> mSimulations;
         std::vector<std::pair<MWWorld::Ptr, osg::Vec3f>> mActorsPositions;
+        float mGroundRecoveryTimer = 0.f;
 
         PhysicsSystem(const PhysicsSystem&);
         PhysicsSystem& operator=(const PhysicsSystem&);

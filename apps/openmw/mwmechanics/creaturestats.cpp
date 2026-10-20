@@ -183,6 +183,8 @@ namespace MWMechanics
 
             mDead = true;
             mEldenCombat.setDead(true);
+            mEldenBossArt.reset();
+            mEldenGripTransition.reset();
             mEldenCombatInput = {};
             mEldenCombatActive = false;
 
@@ -270,6 +272,8 @@ namespace MWMechanics
             mDead = false;
             mDeathAnimationFinished = false;
             mEldenCombat.reset();
+            mEldenBossArt.reset();
+            mEldenGripTransition.reset();
             mEldenCombatInput = {};
             mEldenCombatActive = false;
         }
@@ -565,6 +569,8 @@ namespace MWMechanics
     void CreatureStats::readState(const ESM::CreatureStats& state)
     {
         mEldenCombat.reset();
+        mEldenBossArt.reset();
+        mEldenGripTransition.reset();
         mEldenCombatInput = {};
         mEldenCombatActive = false;
         if (!state.mMissingACDT)

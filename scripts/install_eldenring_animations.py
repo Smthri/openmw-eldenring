@@ -35,6 +35,7 @@ LOCOMOTION = (*range(20000, 20004), *range(20100, 20104), 20200, *range(22100, 2
 BASE_ANIMATIONS = (
     0, 100, *LOCOMOTION, 300000, *range(320000, 320004), *range(320100, 320104),
     322100, 390000, 390001, 202040, 4000, 17002, 50170,
+    29010, 29020, 29040, 29050, 29060, 29080,  # Right/left grip changes and their completion phases.
 )
 # Wind-up and uncharged release phases used by spellcasting.hpp. Keep these
 # mandatory even in a copied Windows checkout without the recreation sources.
@@ -54,6 +55,20 @@ BOW_ANIMATIONS = {
     *(f"a014_{animation:06d}" for animation in (
         0, *LOCOMOTION, 300000, *range(320000, 320004), *range(320100, 320104),
         322100, 390000, 390001)),
+}
+# The local extractor's supported paired movesets. Torch/shield have no paired attacks.
+PAIRED_LIGHT_CHAINS = {
+    **dict.fromkeys(("Dagger", "StraightSword", "ThrustingSword", "Katana", "Hammer", "Axe",
+                     "CurvedSword", "Flail"), 4),
+    **dict.fromkeys(("Greatsword", "ColossalSword", "Spear", "Halberd", "HeavyThrustingSword", "CurvedGreatsword", "Twinblade",
+                     "GreatHammer", "Greataxe", "GreatSpear", "Reaper", "Whip", "ColossalWeapon"), 3),
+    "Fist": 6, "Claw": 6,
+}
+PAIRED_ACTIONS = {
+    (weapon, action)
+    for weapon, count in PAIRED_LIGHT_CHAINS.items()
+    for action in (*(f"PairedLight{index}" for index in range(1, count + 1)),
+                   "PairedRun", "PairedRoll", "PairedBackstep", "PairedJump")
 }
 
 
@@ -86,7 +101,64 @@ def required_clips(timings_header: Path) -> set[str]:
     return expected
 
 
-def validate(source: Path, timings_header: Path, expected_hash: str | None = None) -> dict:
+def paired_requirements(timings_header: Path) -> dict:
+    """Reject stale generated tables that cannot drive both paired weapons.
+
+    This reads only the importer's generated C++ layout, without executing it.
+    Clip inventory alone cannot detect an old table that discarded hit hands.
+    """
+    source = timings_header.read_text(encoding="utf-8")
+    dispatch = re.findall(
+        r'if \(action == Action::(Paired\w+) && config\.mWeaponClass == WeaponClass::(\w+) && !twoHanded\)'
+        r'\s*return ImportedTimingsDetail::(definition\w+)\(config\);', source)
+    mapped = {(weapon, action): name for action, weapon, name in dispatch}
+    missing = sorted(PAIRED_ACTIONS - mapped.keys())
+    if missing:
+        examples = ", ".join(f"{weapon}/{action}" for weapon, action in missing[:8])
+        raise ValueError(f"timing header is missing {len(missing)} paired actions: {examples}; regenerate timings first")
+    if len(mapped) != len(dispatch):
+        raise ValueError("timing header has duplicate paired actions; regenerate timings first")
+    definitions = dict(re.findall(
+        r'inline std::optional<ActionDef> (definition\w+)\([^)]*\)\s*\{(.*?)^        \}',
+        source, flags=re.DOTALL | re.MULTILINE))
+    jump_definitions = {name for (weapon, action), name in mapped.items() if action == "PairedJump"}
+    pending = set(mapped.values())
+    visited = set()
+    clips = set()
+    hit_windows = 0
+    while pending:
+        name = min(pending)
+        pending.remove(name)
+        if name in visited:
+            continue
+        visited.add(name)
+        body = definitions.get(name, "")
+        animation = re.search(r'\bmAnimation\s*=\s*"(a\d{3}_\d{6})"', body)
+        count = re.search(r'\bmHitCount\s*=\s*(\d+)\s*;', body)
+        hits = re.findall(r'\bmHits\[(\d+)\]\s*=\s*\{([^}]+)\}\s*;', body)
+        if (not animation or not count or len(hits) != int(count[1])
+                or {int(index) for index, _ in hits} != set(range(int(count[1])))):
+            raise ValueError(f"paired timing definition {name} is incomplete; regenerate timings first")
+        if int(count[1]) == 0 and not name.endswith("LandingShort"):
+            raise ValueError(f"paired timing definition {name} has no hit windows; regenerate timings first")
+        for index, values in hits:
+            fields = [field.strip() for field in values.split(",")]
+            if len(fields) != 9 or fields[-2] not in ("true", "false") or fields[-1] != "true":
+                raise ValueError(f"paired timing definition {name} hit {index} lacks authored hand metadata; "
+                                 "regenerate timings with the updated extractor and importer first")
+        clips.add(animation[1])
+        hit_windows += int(count[1])
+        landing = dict(re.findall(
+            r'\bm(Landing(?:Short)?)\s*=\s*std::make_shared<ActionDef>\(\*(definition\w+)\(config\)\);', body))
+        if name in jump_definitions:
+            if landing.keys() != {"Landing", "LandingShort"}:
+                raise ValueError(f"paired timing definition {name} lacks jump landing phases; regenerate timings first")
+        pending.update(landing.values())
+    return {"paired_actions": len(mapped), "paired_hit_windows": hit_windows, "paired_clips": sorted(clips)}
+
+
+def validate(source: Path, timings_header: Path, expected_hash: str | None = None,
+             require_paired: bool = False) -> dict:
     if not source.is_file() or not 16 <= source.stat().st_size <= MAX_BYTES:
         raise ValueError(f"animation source must be a regular ERAN file of at most {MAX_BYTES} bytes: {source}")
     auditor = load_auditor()
@@ -96,6 +168,9 @@ def validate(source: Path, timings_header: Path, expected_hash: str | None = Non
     if not POSITION_JOINTS <= set(report["position_joints"]) or not ORIENTED_JOINTS <= set(report["oriented_joints"]):
         raise ValueError("animation bank lacks the humanoid joints or weapon/head axes needed for retargeting")
     expected = required_clips(timings_header)
+    if require_paired:
+        report.update(paired_requirements(timings_header))
+        expected.update(report["paired_clips"])
     recreation = source.parent.parent
     if (recreation / "src/sim/extracted.rs").is_file() and (recreation / "tools/bake_anims.py").is_file():
         expected |= auditor.expected_clips(recreation)
@@ -158,6 +233,8 @@ def main() -> int:
     parser.add_argument("--package", type=Path, help="OpenMW runtime package directory")
     parser.add_argument("--timings-header", type=Path, default=ROOT / "components/eldencombat/imported_timings.hpp")
     parser.add_argument("--check-only", action="store_true", help="validate without writing any files")
+    parser.add_argument("--require-paired", action="store_true",
+                        help="require complete paired actions with authored per-hit hand assignments")
     parser.add_argument("--source-sha256", help="require the hash recorded during a previous validation")
     parser.add_argument("--backup-directory", type=Path, help="optional directory for previous animation banks")
     parser.add_argument("--json", action="store_true", help="print machine-readable validation/install results")
@@ -166,7 +243,7 @@ def main() -> int:
         parser.error("--package is required unless --check-only is used")
     try:
         source = args.source.resolve()
-        report = validate(source, args.timings_header.resolve(), args.source_sha256)
+        report = validate(source, args.timings_header.resolve(), args.source_sha256, args.require_paired)
         if not args.check_only:
             report = install(source, args.package.resolve(), report, args.backup_directory)
     except (OSError, ValueError, SyntaxError, TypeError) as error:
@@ -176,6 +253,9 @@ def main() -> int:
         print(json.dumps(report, indent=2))
     else:
         print(f"Validated {report['clips']} clips and {report['frames']} frames; {report['required_clips']} required clips present.")
+        if "paired_actions" in report:
+            print(f"Paired weapons: {report['paired_actions']} actions, {report['paired_hit_windows']} authored hit windows, "
+                  f"{len(report['paired_clips'])} clips.")
         print(f"SHA256: {report['sha256']}")
         if not args.check_only:
             print(f"{'Installed' if report['changed'] else 'Already installed'}: {report['destination']}")

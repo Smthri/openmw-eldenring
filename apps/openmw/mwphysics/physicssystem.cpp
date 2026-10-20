@@ -712,9 +712,10 @@ namespace MWPhysics
             const bool preserveLandingMomentum = stats.isEldenCombatActive() && !inert && !stats.getKnockedDown()
                 && combat.hitStopRemaining() <= 0.f
                 && (combat.action() == EldenCombat::Action::Idle || combat.action() == EldenCombat::Action::Jump);
-            simulations.emplace_back(ActorSimulation{ physicActor,
-                ActorFrameData{ *physicActor, inert, waterCollision, slowFall, waterlevel, isPlayer,
-                    preserveLandingMomentum } });
+            ActorFrameData frameData{ *physicActor, inert, waterCollision, slowFall, waterlevel, isPlayer,
+                preserveLandingMomentum };
+            frameData.mCheckGroundRecovery = mGroundRecoveryTimer <= 0.f;
+            simulations.emplace_back(ActorSimulation{ physicActor, std::move(frameData) });
 
             // if the simulation will run, a jump request will be fulfilled. Update mechanics accordingly.
             if (willSimulate)
@@ -753,6 +754,7 @@ namespace MWPhysics
 #endif
 
         mTimeAccum += dt;
+        mGroundRecoveryTimer -= dt;
 
         if (skipSimulation)
             mTaskScheduler->resetSimulation(mActors);
@@ -760,6 +762,8 @@ namespace MWPhysics
         {
             std::vector<Simulation>& simulations = mSimulations[mSimulationsCounter++ % mSimulations.size()];
             prepareSimulation(mTimeAccum >= mPhysicsDt, simulations);
+            if (mGroundRecoveryTimer <= 0.f)
+                mGroundRecoveryTimer = 0.5f;
             // modifies mTimeAccum
             mTaskScheduler->applyQueuedMovements(mTimeAccum, simulations, frameStart, frameNumber, stats);
         }

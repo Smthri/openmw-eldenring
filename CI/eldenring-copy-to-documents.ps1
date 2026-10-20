@@ -8,7 +8,7 @@ extern sources and the generated timing header, excluding Git metadata, builds,
 dependencies, caches, and runtime profiles. Existing destination-only files,
 builds, profiles and saves are preserved. This script does not start a build.
 .EXAMPLE
-powershell -NoProfile -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\<linux-user>\openMW-eldenring\openmw\CI\eldenring-copy-to-documents.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\<linux-user>\openMW-eldenring\openmw-eldenring\CI\eldenring-copy-to-documents.ps1"
 .EXAMPLE
 .\CI\eldenring-copy-to-documents.ps1 -DestinationDirectory 'D:\Sources\openmw' -ListOnly
 #>
@@ -43,6 +43,8 @@ $required = @(
     'CMakeLists.txt', 'apps\openmw\CMakeLists.txt', 'components\CMakeLists.txt',
     'extern\oics\CMakeLists.txt', 'extern\sol3\sol\sol.hpp',
     'components\eldencombat\imported_timings.hpp', 'CI\eldenring-build-windows.ps1',
+    'components\eldencombat\bossarts.hpp', 'components\eldencombat\guard.hpp', 'components\eldencombat\nativeattack.hpp',
+    'components\eldencombat\creatureposes.hpp', 'components\eldencombat\grip.hpp',
     'scripts\install_eldenring_animations.py', 'CI\eldenring-audit-animations.py', 'scripts\verify_eldenring_copy.py'
 )
 foreach ($relative in $required) {
@@ -74,7 +76,7 @@ if ($AnimationsSource) {
     } finally { $reader.Dispose() }
     $animationHash = (Get-FileHash -LiteralPath $AnimationsSource -Algorithm SHA256).Hash
 } else {
-    Write-Warning 'No local player_anims.bin was found. Source will be copied, but Elden animations require your baked bank in local-assets\player_anims.bin or the build helper -AnimationsSource option.'
+    throw 'No local player_anims.bin was found. Place the complete baked bank in local-assets\player_anims.bin or pass -AnimationsSource before copying.'
 }
 
 if (-not $MusicSource) {
@@ -94,12 +96,12 @@ if ($musicPython) { $musicPythonArguments = @('-3') }
 else { $musicPython = Get-Command 'python.exe' -ErrorAction SilentlyContinue }
 if (-not $musicPython) { throw 'Python 3.10+ is required to validate copied source and local assets.' }
 if ($AnimationsSource) {
-    # Check the complete bank, including seal phases and dart throws. SourceDirectory
+    # Check paired hit hands/timings and the complete bank. SourceDirectory
     # can differ from this script's location, so use its matching timing header.
     & $musicPython.Source @musicPythonArguments (Join-Path $SourceDirectory 'scripts\install_eldenring_animations.py') `
-        --source $AnimationsSource --timings-header $timingHeader --check-only
+        --source $AnimationsSource --timings-header $timingHeader --require-paired --check-only
     if ($LASTEXITCODE -ne 0) {
-        throw "Animation validation failed for '$AnimationsSource'; no source files were copied. Rebake with the updated animation importer and replace local-assets\player_anims.bin, or pass -AnimationsSource with the complete neighboring ELDEN-RING-Combat-Rewrite\assets\player_anims.bin."
+        throw "Animation validation failed for '$AnimationsSource'; no source files were copied. Regenerate timings with the updated neighboring extractor and scripts/import_eldenring_timings.py; rebake only if clips are missing. Pass -AnimationsSource with the complete neighboring ELDEN-RING-Combat-Rewrite\assets\player_anims.bin if local-assets is stale."
     }
 }
 $musicInstaller = Join-Path $SourceDirectory 'scripts\install_eldenring_music.py'

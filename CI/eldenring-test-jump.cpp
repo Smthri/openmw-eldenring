@@ -369,7 +369,7 @@ namespace
             Config config;
             config.mWeaponClass = config.mLeftWeaponClass = weapon;
             config.mHasShield = false;
-            config.mHasLeftWeapon = config.mPairedWeapons = true;
+            config.mHasLeftWeapon = config.mPairedWeapons = action == Action::PairedJump;
             config.mStaminaRegen = 0.f;
             config.mSpeedMultiplier = speed;
             const auto air = Controller::actionDefinition(action, config, twoHanded);
@@ -413,13 +413,23 @@ namespace
                 }
                 else if (scenario == 2)
                 {
-                    while (controller.frame() < air.mHits[0].mFrom)
+                    std::size_t contacts = 0;
+                    while (contacts < air.mHitCount)
+                    {
                         controller.update(input, step);
-                    check(controller.activeHit().has_value(), "airborne hit window was missed");
-                    controller.markHit();
+                        while (controller.activeHit())
+                        {
+                            ++contacts;
+                            controller.markHit();
+                        }
+                        check(controller.frame() <= air.mDuration, "airborne hit window was missed");
+                    }
                 }
                 const float airFrame = controller.frame();
-                const bool finished = airFrame >= air.mHits[0].mTo;
+                float hitEnd = 0.f;
+                for (std::size_t index = 0; index < air.mHitCount; ++index)
+                    hitEnd = std::max(hitEnd, air.mHits[index].mTo);
+                const bool finished = airFrame >= hitEnd;
                 const auto& landing = finished ? *air.mLandingShort : *air.mLanding;
                 input.mGrounded = true;
                 auto update = controller.update(input, step);

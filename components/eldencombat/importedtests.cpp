@@ -3,6 +3,10 @@
 #include "poisetests.hpp"
 #include "dodgecosttests.hpp"
 #include "nativeattacktests.hpp"
+#include "guardtests.hpp"
+#include "guardthrusttests.hpp"
+#include "griptests.hpp"
+#include "pairedtests.hpp"
 #include "animations.hpp"
 #include "imported_timings.hpp"
 
@@ -221,12 +225,58 @@ int main(int argc, char** argv)
         EldenCombat::Tests::enemyPoise();
         EldenCombat::Tests::configurableDodgeCost();
         EldenCombat::Tests::nativeCreatureAttacks();
+        EldenCombat::Tests::guardRecoilAnimation();
+        EldenCombat::Tests::attackerGuardDeflection();
+        EldenCombat::Tests::guardedSpearAttacks();
+        EldenCombat::Tests::gripTransitions();
+        EldenCombat::Tests::leftGripRootMotion();
+        EldenCombat::Tests::pairedAttackButtons();
+        EldenCombat::Tests::pairedContactOwnership();
+        EldenCombat::Tests::pairedJumpContacts();
+        EldenCombat::Tests::pairedMisses();
         std::unique_ptr<EldenCombat::AnimationBank> animations;
         if (argc > 1)
         {
             std::ifstream stream(argv[1], std::ios::binary);
             check(static_cast<bool>(stream), "cannot open local animation bank");
             animations = std::make_unique<EldenCombat::AnimationBank>(stream);
+            for (const auto from : { EldenCombat::Grip::OneHand, EldenCombat::Grip::TwoHandRight,
+                     EldenCombat::Grip::TwoHandLeft })
+                for (const auto to : { EldenCombat::Grip::OneHand, EldenCombat::Grip::TwoHandRight,
+                         EldenCombat::Grip::TwoHandLeft })
+                {
+                    EldenCombat::GripTransition swap;
+                    swap.start(from, to);
+                    while (swap.active())
+                    {
+                        const auto pose = swap.pose();
+                        const auto* clip = animations->find(pose.mAnimation);
+                        check(clip && pose.mFrame <= clip->mFrames - 1 + .001f,
+                            "grip transition outlasts or lacks its actual bank clip");
+                        swap.advance(EldenCombat::TickSeconds);
+                    }
+                }
+        }
+        {
+            EldenCombat::Config spear;
+            spear.mWeaponClass = EldenCombat::WeaponClass::Spear;
+            const auto thrust = EldenCombat::Controller::actionDefinition(EldenCombat::Action::SpearThrust, spear, true);
+            validate(thrust);
+            const auto guarded = EldenCombat::Controller::actionDefinition(EldenCombat::Action::GuardThrust, spear);
+            validate(guarded);
+            check(!thrust.mAnimation.empty() && thrust.mHitCount == 1, "missing imported quick spear thrust");
+            if (animations)
+            {
+                const auto* clip = animations->find(thrust.mAnimation);
+                check(clip != nullptr, "baked bank is missing the quick spear thrust");
+                check(thrust.mDuration * thrust.mAnimationSpeed <= clip->mFrames - 1 + .001f,
+                    "quick spear thrust outlasts its imported clip");
+                check(thrust.mHits[0].mTo * thrust.mAnimationSpeed <= clip->mFrames - 1 + .001f,
+                    "quick spear thrust damage outlasts its imported clip");
+                const auto* guardedClip = animations->find(guarded.mAnimation);
+                check(guardedClip && guarded.mDuration * guarded.mAnimationSpeed <= guardedClip->mFrames - 1 + .001f,
+                    "shield poke outlasts or lacks its one-handed spear clip");
+            }
         }
         std::size_t definitions = 0;
         std::size_t movesets = 0;
@@ -248,7 +298,7 @@ int main(int argc, char** argv)
                     EldenCombat::Config config;
                     config.mWeaponClass = static_cast<EldenCombat::WeaponClass>(weapon);
                     config.mLeftWeaponClass = config.mWeaponClass;
-                    config.mSpeedMultiplier = speed;
+                    config.mSpeedMultiplier = config.mLeftSpeedMultiplier = speed;
                     for (int action = static_cast<int>(EldenCombat::Action::Light1);
                          action < static_cast<int>(EldenCombat::Action::Dead); ++action)
                     {

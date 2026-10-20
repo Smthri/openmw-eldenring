@@ -5,8 +5,11 @@
 #include <string_view>
 
 #include <components/esm3/loadarmo.hpp>
+#include <components/esm3/loadcrea.hpp>
 #include <components/esm3/loadligh.hpp>
+#include <components/esm3/loadmgef.hpp>
 #include <components/esm3/loadskil.hpp>
+#include <components/esm3/loadspel.hpp>
 #include <components/esm3/loadweap.hpp>
 #include <components/misc/rng.hpp>
 #include <components/settings/values.hpp>
@@ -14,11 +17,14 @@
 #include "../mwbase/environment.hpp"
 #include "../mwbase/soundmanager.hpp"
 #include "../mwbase/world.hpp"
+#include "../mwrender/animation.hpp"
 #include "../mwworld/class.hpp"
+#include "../mwworld/esmstore.hpp"
 #include "../mwworld/inventorystore.hpp"
 
 #include "actorutil.hpp"
 #include "creaturestats.hpp"
+#include "spellcasting.hpp"
 #include "weapontype.hpp"
 
 namespace MWMechanics
@@ -99,6 +105,73 @@ namespace MWMechanics
 
     namespace
     {
+        ESM::RefId bossArtMagicEffect(EldenCombat::BossArtEffect effect)
+        {
+            using Effect = EldenCombat::BossArtEffect;
+            switch (effect)
+            {
+                case Effect::Fire: return ESM::MagicEffect::FireDamage;
+                case Effect::Frost: return ESM::MagicEffect::FrostDamage;
+                case Effect::Shock: return ESM::MagicEffect::ShockDamage;
+                case Effect::AbsorbHealth: return ESM::MagicEffect::AbsorbHealth;
+                case Effect::DamageFatigue: return ESM::MagicEffect::DamageFatigue;
+                case Effect::Poison: return ESM::MagicEffect::Poison;
+                case Effect::Burden: return ESM::MagicEffect::Burden;
+            }
+            return {};
+        }
+
+        const ESM::Spell* bossArtSpell(const EldenCombat::BossArtProfile& art)
+        {
+            auto& store = *MWBase::Environment::get().getESMStore();
+            const auto id = ESM::RefId::stringRefId("omw_elden_boss_art_" + std::string(art.mId));
+            if (const auto* existing = store.get<ESM::Spell>().search(id))
+                return existing;
+            ESM::Spell spell;
+            spell.blank();
+            spell.mId = id;
+            spell.mName = art.mName;
+            spell.mData.mFlags = ESM::Spell::F_Always;
+            for (std::size_t i = 0; i < art.mEffectCount; ++i)
+            {
+                const auto& source = art.mEffects[i];
+                ESM::IndexedENAMstruct effect{};
+                effect.mIndex = static_cast<std::uint32_t>(i);
+                effect.mData.mEffectID = bossArtMagicEffect(source.mEffect);
+                if (!store.get<ESM::MagicEffect>().search(effect.mData.mEffectID))
+                    return nullptr;
+                effect.mData.mRange = ESM::RT_Touch;
+                effect.mData.mDuration = source.mDuration;
+                effect.mData.mMagnMin = effect.mData.mMagnMax = source.mMagnitude;
+                spell.mEffects.mList.push_back(effect);
+            }
+            // One private record per art, reused on later swings and restored
+            // with native dynamic records on load. Never replace a game record
+            // or add abilities to the boss's spellbook/AI spell selection.
+            return store.overrideRecord(spell);
+        }
+
+        void applyEldenBossArtHit(const MWWorld::Ptr& actor, const MWWorld::Ptr& victim,
+            const EldenCombat::Attack& attack, bool connected)
+        {
+            if (actor.isEmpty() || !useEldenMelee(actor))
+                return;
+            auto& stats = actor.getClass().getCreatureStats(actor);
+            const auto* art = stats.getEldenBossArt().consume(attack);
+            if (!art || !connected || victim.isEmpty() || stats.isDead())
+                return;
+            if (const auto* spell = bossArtSpell(*art))
+            {
+                CastSpell cast(actor, victim);
+                // The heavy attack already owns its stamina cost. Native
+                // absorption, reflection, resistance, active effects and hit
+                // sounds remain in the normal (non-scripted) spell pipeline.
+                cast.mAlwaysSucceed = true;
+                cast.mHitPosition = victim.getRefData().getPosition().asVec3();
+                cast.cast(spell);
+            }
+        }
+
         void playEldenBlockSound(const MWWorld::Ptr& actor)
         {
             const auto soundManager = MWBase::Environment::get().getSoundManager();
@@ -158,6 +231,47 @@ namespace MWMechanics
         }
     }
 
+    bool beginEldenBossArt(const MWWorld::Ptr& actor)
+    {
+        const auto& id = actor.getCellRef().getRefId();
+        if (!id.is<ESM::StringRefId>())
+            return false;
+        const auto* art = EldenCombat::bossArtForRecord(id.getRefIdString());
+        if (!art || !useEldenMelee(actor) || actor == getPlayer())
+            return false;
+        auto& stats = actor.getClass().getCreatureStats(actor);
+        if (!stats.isEldenCombatActive() || !stats.getAiSequence().isInCombat())
+            return false;
+        if (art->mSpearThrust)
+        {
+            const auto* animation = MWBase::Environment::get().getWorld()->getAnimation(MWWorld::ConstPtr(actor));
+            const auto thrust = EldenCombat::Controller::actionDefinition(
+                EldenCombat::Action::SpearThrust, stats.getEldenCombat().config(), true);
+            if (!animation || !animation->hasEldenEmbeddedSpear() || thrust.mAnimation.empty()
+                || animation->getEldenAnimationLength(thrust.mAnimation) <= 0.f)
+                art = &EldenCombat::BossArts[5]; // Unsupported replacements retain Hunter's Rend.
+        }
+        if (stats.getEldenBossArt().active() || stats.getEldenBossArt().cooldown() > 0.f
+            || stats.getEldenCombat().action() != EldenCombat::Action::Idle)
+            return false;
+        if (art->mChance < 1.f
+            && Misc::Rng::rollProbability(MWBase::Environment::get().getWorld()->getPrng()) >= art->mChance)
+            return false;
+        const auto* spell = bossArtSpell(*art);
+        if (!spell || !stats.getEldenBossArt().begin(*art, stats.getEldenCombat()))
+            return false;
+        CastSpell(actor, actor).playSpellCastingEffects(spell);
+        return true;
+    }
+
+    void updateEldenBossArt(const MWWorld::Ptr& actor, float duration)
+    {
+        auto& stats = actor.getClass().getCreatureStats(actor);
+        stats.getEldenBossArt().update(stats.getEldenCombat(), duration,
+            stats.isEldenCombatActive() && useEldenMelee(actor) && !stats.isDead()
+                && stats.getEldenCombatInput().mAIControlled && stats.getAiSequence().isInCombat());
+    }
+
     EldenCombat::Config eldenCombatConfig(const MWWorld::Ptr& actor)
     {
         EldenCombat::Config config;
@@ -171,6 +285,16 @@ namespace MWMechanics
         config.mMaximumStance = std::max(30.f, cls.getCreatureStats(actor)
             .getAttribute(ESM::Attribute::Endurance).getModified());
         config.mWeaponClass = EldenCombat::WeaponClass::Fist;
+        // Guile's spear belongs to his creature mesh, not an equipped item.
+        // Only use its imported moveset when the renderer validated that rig
+        // and attachment. Native creature damage and loot remain unchanged.
+        if (actor.getCellRef().getRefId() == "bm_hircine_huntaspect")
+        {
+            const MWBase::World* world = MWBase::Environment::get().getWorld();
+            if (const auto* animation = world->getAnimation(MWWorld::ConstPtr(actor));
+                animation && animation->hasEldenEmbeddedSpear())
+                config.mWeaponClass = EldenCombat::WeaponClass::Spear;
+        }
 
         // Equipment load uses worn items, excluding ammunition and unequipped loot.
         float equipmentWeight = 0.f;
@@ -196,6 +320,8 @@ namespace MWMechanics
             if (config.mHasLeftWeapon)
             {
                 config.mLeftWeaponClass = weaponClass(*left);
+                if (left->getType() == ESM::Weapon::sRecordId)
+                    config.mLeftSpeedMultiplier = std::clamp(left->get<ESM::Weapon>()->mBase->mData.mSpeed, 0.25f, 3.f);
                 config.mPairedWeapons = config.mWeaponClass == config.mLeftWeaponClass;
             }
             else if (left != inv.end() && left->getType() == ESM::Light::sRecordId)
@@ -223,6 +349,13 @@ namespace MWMechanics
             poise.mStrength = stats.getAttribute(ESM::Attribute::Strength).getModified();
             poise.mCreature = !cls.isNpc();
             poise.mHealth = stats.getHealth().getModified();
+            if (poise.mCreature && actor.getCellRef().getRefId() == ESM::RefId::stringRefId("golden saint_staada"))
+            {
+                // Staada's extra health must not also increase her poise.
+                const float baseHealth = static_cast<float>(actor.get<ESM::Creature>()->mBase->mData.mHealth);
+                if (stats.getHealth().getBase() == baseHealth * 3.f)
+                    poise.mHealth -= baseHealth * 2.f;
+            }
             poise.mLevel = static_cast<float>(stats.getLevel());
             if (!poise.mCreature)
                 poise.mArmorRating = cls.getArmorRating(actor);
@@ -303,6 +436,7 @@ namespace MWMechanics
         }
         stats.getEldenCombatInput().mTwoHanded = false;
         stats.getEldenCombatInput().mTwoHandedLeft = false;
+        stats.getEldenGripTransition().reset();
     }
 
     bool toggleEldenGrip(const MWWorld::Ptr& actor, bool left)
@@ -310,7 +444,8 @@ namespace MWMechanics
         if (!useEldenCombat(actor) || !actor.getClass().hasInventoryStore(actor))
             return false;
         auto& stats = actor.getClass().getCreatureStats(actor);
-        if (stats.getDrawState() != DrawState::Weapon || stats.getEldenCombat().action() != EldenCombat::Action::Idle)
+        if (stats.getDrawState() != DrawState::Weapon || stats.getEldenCombat().action() != EldenCombat::Action::Idle
+            || stats.getEldenGripTransition().active())
             return false;
         auto& inventory = actor.getClass().getInventoryStore(actor);
         const auto item = inventory.getSlot(left ? MWWorld::InventoryStore::Slot_CarriedLeft
@@ -325,12 +460,15 @@ namespace MWMechanics
         else if (!left || (item->getType() != ESM::Light::sRecordId && item->getType() != ESM::Armor::sRecordId))
             return false;
         auto& input = stats.getEldenCombatInput();
+        using Grip = EldenCombat::Grip;
+        const Grip from = !input.mTwoHanded ? Grip::OneHand
+            : input.mTwoHandedLeft ? Grip::TwoHandLeft : Grip::TwoHandRight;
         const bool release = input.mTwoHanded && input.mTwoHandedLeft == left;
-        input.mTwoHanded = !release;
-        input.mTwoHandedLeft = !release && left;
+        const Grip to = release ? Grip::OneHand : left ? Grip::TwoHandLeft : Grip::TwoHandRight;
+        if (!stats.getEldenGripTransition().start(from, to))
+            return false;
         input.mLight = input.mHeavy = input.mGuard = input.mCritical = {};
-        stats.getEldenCombat().reset(true);
-        stats.getEldenCombat().setVitals(stats.getFatigue().getCurrent(), stats.getFatigue().getModified());
+        stats.getEldenCombat().clearRequests();
         return true;
     }
 
@@ -360,8 +498,19 @@ namespace MWMechanics
 
     bool resolveEldenHit(const MWWorld::Ptr& attacker, const MWWorld::Ptr& victim, float& damage, bool ranged)
     {
+        EldenCombat::Attack attack;
+        if (!ranged && !attacker.isEmpty() && useEldenMelee(attacker))
+        {
+            const auto hit = attacker.getClass().getCreatureStats(attacker).getEldenCombat().activeHit();
+            if (hit)
+                attack = *hit;
+        }
         if (!useEldenCombat(victim))
+        {
+            if (!ranged)
+                applyEldenBossArtHit(attacker, victim, attack, damage > 0.f);
             return true;
+        }
         auto& stats = victim.getClass().getCreatureStats(victim);
         auto& combat = stats.getEldenCombat();
         // Both melee and projectiles enter here before their physical contact
@@ -375,17 +524,12 @@ namespace MWMechanics
             // Swimming/paralysis/scripted controls disable the action controller,
             // but should not erase or freeze this short physical-hit protection.
             combat.protectAfterHit(damage);
+            if (!ranged)
+                applyEldenBossArtHit(attacker, victim, attack, damage > 0.f);
             return true;
         }
         combat.setVitals(stats.getFatigue().getCurrent(), stats.getFatigue().getModified());
 
-        EldenCombat::Attack attack;
-        if (!ranged && useEldenMelee(attacker))
-        {
-            const auto hit = attacker.getClass().getCreatureStats(attacker).getEldenCombat().activeHit();
-            if (hit)
-                attack = *hit;
-        }
         EldenCombat::Incoming incoming;
         incoming.mDamage = damage;
         incoming.mStaminaDamage = std::max(5.f, damage * attack.mGuardDamage);
@@ -415,8 +559,12 @@ namespace MWMechanics
                 return false;
             case EldenCombat::HitResult::Blocked:
                 damage = 0.f;
-                stats.setBlock(true);
+                // A shield poke keeps its attack and guard-arm layer. Native
+                // full-body recoil would hide that pose and cancel the thrust.
+                stats.setBlock(combat.action() != EldenCombat::Action::GuardThrust);
                 playEldenBlockSound(victim);
+                if (!ranged && !attacker.isEmpty() && useEldenMelee(attacker))
+                    attacker.getClass().getCreatureStats(attacker).getEldenCombat().deflectHit(attack);
                 if (victim == getPlayer() && combat.config().mHasShield)
                     victim.getClass().skillUsageSucceeded(victim, ESM::Skill::Block, ESM::Skill::Block_Success);
                 break;
@@ -433,6 +581,8 @@ namespace MWMechanics
             case EldenCombat::HitResult::Hit:
                 break;
         }
+        if (!ranged)
+            applyEldenBossArtHit(attacker, victim, attack, damage > 0.f);
         if (!ranged && !attacker.isEmpty() && useEldenCombat(attacker))
         {
             attacker.getClass().getCreatureStats(attacker).getEldenCombat().applyHitStop(attack.mHitStop);

@@ -16,6 +16,7 @@ import import_eldenring_sounds as importer
 import install_eldenring_sounds as installer
 import install_eldenring_animations as animations
 from eldenring_music import wem, wwise
+from eldenring_animation_fixtures import paired_timings
 
 
 def chunk(tag, body):
@@ -325,13 +326,17 @@ class SoundInstallation(unittest.TestCase):
         shutil.copyfile(repository / "copy-to-documents.sh", tree / "copy-to-documents.sh")
         for name in ("CMakeLists.txt", "apps/openmw/CMakeLists.txt", "components/CMakeLists.txt",
                      "extern/sol3/sol/sol.hpp", "extern/oics/CMakeLists.txt",
+                     "components/eldencombat/bossarts.hpp", "components/eldencombat/guard.hpp",
+                     "components/eldencombat/nativeattack.hpp", "components/eldencombat/creatureposes.hpp",
+                     "components/eldencombat/grip.hpp",
                      "components/eldencombat/imported_timings.hpp", "CI/eldenring-build-windows.ps1"):
             path = tree / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture source\n")
         shutil.copyfile(repository / "CI/eldenring-audit-animations.py", tree / "CI/eldenring-audit-animations.py")
         timing_header = tree / "components/eldencombat/imported_timings.hpp"
-        timing_header.write_text('result.mAnimation = "a001_003000";\nreturn twoHanded ? 10u : 0u;',
+        timing_header.write_text('result.mAnimation = "a001_003000";\nreturn twoHanded ? 10u : 0u;\n'
+                                 + paired_timings(animations.PAIRED_ACTIONS),
                                  encoding="utf-8")
         (tree / "local-assets").mkdir()
         (tree / "local-assets/player_anims.bin").write_bytes(animation_bank(timing_header))

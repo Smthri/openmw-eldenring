@@ -151,6 +151,20 @@ namespace MWRender
                     primary = p[finger + 4] - p[joint];
                     secondary = p[finger + 3] - p[finger + 4];
                 }
+                else if (joint == arm + 2)
+                {
+                    primary = p[arm + 3] - p[joint];
+                    // Elbow positions describe flexion, not forearm
+                    // pronation. Giving the forearm only the elbow plane
+                    // concentrates the palm's full axial turn at the wrist.
+                    // Carry the palm frame back along the wrist bend instead;
+                    // this preserves the authored hand and weapon orientation
+                    // while placing pronation along the forearm.
+                    osg::Quat wristBend;
+                    wristBend.makeRotate(unit(p[finger + 4] - p[arm + 3], unit(primary, body.mUp)),
+                        unit(primary, body.mUp));
+                    secondary = wristBend * (p[finger + 3] - p[finger + 4]);
+                }
                 else
                 {
                     primary = p[joint + 1] - p[joint];
@@ -326,35 +340,33 @@ namespace MWRender
                 {
                     if (mBeforeNative)
                         state->restoreWeapon();
-                    else if (state->mEnabled && state->mAlignSpear)
-                    {
-                        // Read the actual displayed parent after pose blending,
-                        // not the unblended targets calculated by play().
-                        osg::Vec3f translation, scale;
-                        osg::Quat parent, scaleOrientation;
-                        osg::computeLocalToWorld(state->mWeaponParents).decompose(
-                            translation, parent, scale, scaleOrientation);
-                        const osg::Quat facing(state->mFacing.shown(), osg::Vec3f(0, 0, 1));
-                        state->mNativeWeaponRotation = node->mRotationScale.toOsgMatrix().getRotate();
-                        if (!state->mHaveWeaponBlendFrom)
-                        {
-                            // The native attachment is captured after the body
-                            // has turned, so remove its current displayed yaw.
-                            state->mWeaponBlendFrom = state->mNativeWeaponRotation * parent * facing.inverse();
-                            state->mHaveWeaponBlendFrom = true;
-                        }
-                        state->mShownWeaponRotation.slerp(
-                            state->mWeaponBlend, state->mWeaponBlendFrom, state->mWeaponTargetRotation);
-                        state->mShownWeaponRotation *= facing;
-                        // Native spear meshes point towards local +Y, exactly
-                        // like R_Weapon in the imported animations. Keep the
-                        // native attachment's translation and scale intact.
-                        node->setRotation(state->mShownWeaponRotation * parent.inverse());
-                        state->mWeaponOverridden = true;
-                        state->mHaveShownWeapon = true;
-                    }
+                    else if (state->mEnabled && state->mAlignSpear && !state->mTwoHandedSpear
+                        && !state->mLeftHanded)
+                        state->applyWeapon();
                 }
                 traverse(node, visitor);
+            }
+        };
+
+        // Embedded weapons and the other hand may follow the weapon during
+        // traversal. Wait for both displayed palms before placing a two-hand grip.
+        struct SpearCallback : SceneUtil::NodeCallback<SpearCallback, osg::Group*>
+        {
+            std::weak_ptr<Impl> mState;
+            SpearCallback() = default;
+            SpearCallback(const SpearCallback& copy, const osg::CopyOp& op)
+                : SceneUtil::NodeCallback<SpearCallback, osg::Group*>(copy, op)
+                , mState(copy.mState)
+            {
+            }
+            META_Object(MWRender, SpearCallback)
+            void operator()(osg::Group* node, osg::NodeVisitor* visitor)
+            {
+                traverse(node, visitor);
+                if (const auto state = mState.lock(); state && state->mEnabled
+                    && ((state->mAlignSpear && (state->mEmbeddedSpear || state->mTwoHandedSpear))
+                        || state->mAlignLeftWeapon))
+                    state->applyWeapon();
             }
         };
 
@@ -377,8 +389,15 @@ namespace MWRender
                 if (const auto state = mState.lock())
                 {
                     if (mBeforeNative)
+                    {
                         state->restoreShield();
-                    else if (state->mEnabled && (state->mAlignShield || state->mHaveShownShield))
+                        if (state->mOverriddenWeaponNode.get() == node)
+                            state->restoreWeapon();
+                    }
+                    else if (state->mEnabled && state->mAlignOffhandWeapon)
+                        state->applyOffhandWeapon();
+                    else if (state->mEnabled && !state->mAlignLeftWeapon
+                        && (state->mAlignShield || state->mHaveShownShield))
                     {
                         osg::Vec3f translation, scale;
                         osg::Quat parent, scaleOrientation;
@@ -386,6 +405,7 @@ namespace MWRender
                             translation, parent, scale, scaleOrientation);
                         const osg::Quat facing(state->mFacing.shown(), osg::Vec3f(0, 0, 1));
                         state->mNativeShieldRotation = node->mRotationScale.toOsgMatrix().getRotate();
+                        state->mNativeShieldTranslation = node->getMatrix().getTrans();
                         if (!state->mHaveShieldBlendFrom)
                         {
                             state->mShieldBlendFrom = state->mNativeShieldRotation * parent * facing.inverse();
@@ -461,6 +481,8 @@ namespace MWRender
         std::array<bool, JointCount> mHaveBindJoint{};
         std::vector<float> mSample;
         std::vector<float> mLayer;
+        std::vector<float> mMirrorSource;
+        std::vector<std::pair<std::size_t, std::size_t>> mMirrorOffsets;
         std::vector<osg::Quat> mModelRotations;
         std::vector<osg::Matrixf> mModelMatrices;
         std::string mClip;
@@ -470,7 +492,9 @@ namespace MWRender
         float mFade = 0.f;
         float mFadeLength = 0.f;
         EldenPose::HeadingBlend mFacing;
-        std::array<EldenPose::LimbBendPlane, 10> mLimbPlanes;
+        std::array<EldenPose::ArmBendPlane, 2> mArmPlanes;
+        std::array<float, 2> mArmPlaneSigns{ 1.f, 1.f };
+        std::array<EldenPose::LimbBendPlane, 6> mLimbPlanes;
         float mFrame = 0.f;
         bool mLoop = false;
         float mLayerFrame = 0.f;
@@ -479,11 +503,27 @@ namespace MWRender
         bool mValid = false;
         bool mEnabled = false;
         bool mUpperBodyOnly = false;
+        bool mLeftHanded = false;
+        bool mAlignLeftWeapon = false;
 
         osg::ref_ptr<NifOsg::MatrixTransform> mWeaponNode;
         osg::NodePath mWeaponParents;
+        osg::NodePath mWeaponPoseParents;
+        std::size_t mWeaponPoseParent = sNoParent;
         std::optional<std::size_t> mWeaponAxes;
         osg::Quat mNativeWeaponRotation;
+        osg::Vec3f mNativeWeaponTranslation;
+        osg::Quat mWeaponBasis;
+        bool mEmbeddedSpear = false;
+        bool mTwoHandedSpear = false;
+        osg::Vec3f mEmbeddedSpearPalm;
+        osg::Vec3f mSpearLeftPalm;
+        osg::NodePath mSpearLeftParents;
+        osg::Vec3f mSpearRightPalm;
+        osg::NodePath mSpearRightParents;
+        std::vector<osg::observer_ptr<osg::Node>> mSpearGeometry;
+        std::optional<osg::Vec3f> mSpearContact;
+        float mSpearRearTravel = 0.f;
         osg::Quat mWeaponTargetRotation;
         osg::Quat mShownWeaponRotation;
         osg::Quat mWeaponBlendFrom;
@@ -492,16 +532,24 @@ namespace MWRender
         bool mWeaponOverridden = false;
         bool mHaveShownWeapon = false;
         bool mHaveWeaponBlendFrom = false;
+        osg::ref_ptr<NifOsg::MatrixTransform> mOverriddenWeaponNode;
 
         osg::ref_ptr<NifOsg::MatrixTransform> mShieldNode;
         osg::NodePath mShieldParents;
+        osg::NodePath mShieldPoseParents;
+        std::size_t mShieldPoseParent = sNoParent;
         std::optional<std::size_t> mShieldAxes;
         osg::Quat mNativeShieldRotation;
+        osg::Vec3f mNativeShieldTranslation;
         osg::Quat mShieldTargetRotation;
         osg::Quat mShownShieldRotation;
         osg::Quat mShieldBlendFrom;
         float mShieldBlend = 1.f;
         bool mAlignShield = false;
+        bool mAlignOffhandWeapon = false;
+        bool mAlignOffhandSpear = false;
+        std::vector<osg::observer_ptr<osg::Node>> mOffhandGeometry;
+        std::optional<osg::Vec3f> mOffhandSpearContact;
         bool mShieldOverridden = false;
         bool mHaveShownShield = false;
         bool mHaveShieldBlendFrom = false;
@@ -820,6 +868,7 @@ namespace MWRender
         }
 
         std::array<std::size_t, 4> mSwordArm{ sNoParent, sNoParent, sNoParent, sNoParent };
+        std::array<std::size_t, 4> mLeftSwordArm{ sNoParent, sNoParent, sNoParent, sNoParent };
         osg::Vec3f mBindRight;
         float mSwordGripDistance = 0.f;
         float mSwordPalmHalfWidth = 0.f;
@@ -829,35 +878,49 @@ namespace MWRender
 
         void closeSwordGrip(float blend)
         {
-            if (!mWeaponNode || mSwordGripDistance <= 0.f || mSwordPalmHalfWidth <= 0.f
-                || std::find(mSwordArm.begin(), mSwordArm.end(), sNoParent) != mSwordArm.end())
+            auto* node = heldWeaponNode();
+            const auto& arm = mLeftHanded ? mLeftSwordArm : mSwordArm;
+            const auto& parents = heldWeaponParents();
+            if (!node || mSwordGripDistance <= 0.f || mSwordPalmHalfWidth <= 0.f
+                || std::find(arm.begin(), arm.end(), sNoParent) != arm.end())
                 return;
-            const auto [upper, forearm, hand, rightHand] = mSwordArm;
+            const auto [upper, forearm, hand, rightHand] = arm;
             if (mBones[forearm].mParent != upper || mBones[hand].mParent != forearm
-                || mWeaponParents.empty() || mWeaponParents.back() != mBones[rightHand].mNode.get())
+                || parents.empty() || parents.back() != mBones[rightHand].mNode.get())
                 return;
 
             // Native ready and locomotion attachments are constant. Read the last completed
             // native update, then solve before this frame's bone callbacks and
             // skinning cache run. The normal pose fade covers entry transitions.
-            const osg::Matrixf attachment = mWeaponNode->getMatrix();
+            osg::Matrixf attachment = node->getMatrix();
+            if (mLeftHanded)
+            {
+                const osg::Quat facing(mFacing.shown(), osg::Vec3f(0, 0, 1));
+                osg::Quat rotation;
+                rotation.slerp(mWeaponBlend, mHaveWeaponBlendFrom ? mWeaponBlendFrom
+                    : node->mRotationScale.toOsgMatrix().getRotate() * mModelRotations[rightHand] * facing.inverse(),
+                    mWeaponTargetRotation);
+                attachment = osg::Matrixf::scale(node->mScale, node->mScale, node->mScale)
+                    * osg::Matrixf::rotate(rotation * facing * mModelRotations[rightHand].inverse());
+                attachment.setTrans(mSpearLeftPalm);
+            }
             const osg::Matrixf weaponModel = attachment * mModelMatrices[rightHand];
             const float scale = osg::Matrixf::transform3x3(osg::Vec3f(0, 1, 0), weaponModel).length();
             if (!std::isfinite(scale) || scale < 1e-5f)
                 return;
             bool changed = std::abs(scale - mSwordGeometryScale) > 1e-4f * std::max(scale, mSwordGeometryScale)
-                || mSwordGeometry.size() != mWeaponNode->getNumChildren();
-            for (unsigned int i = 0; !changed && i < mWeaponNode->getNumChildren(); ++i)
-                changed = mSwordGeometry[i].get() != mWeaponNode->getChild(i);
+                || mSwordGeometry.size() != node->getNumChildren();
+            for (unsigned int i = 0; !changed && i < node->getNumChildren(); ++i)
+                changed = mSwordGeometry[i].get() != node->getChild(i);
             if (changed)
             {
                 // Inspect the equipped model in attachment space, once per
                 // model/scale. This accommodates short and offset sword hilts.
                 GripGeometryVisitor geometry;
                 mSwordGeometry.clear();
-                for (unsigned int i = 0; i < mWeaponNode->getNumChildren(); ++i)
+                for (unsigned int i = 0; i < node->getNumChildren(); ++i)
                 {
-                    auto* child = mWeaponNode->getChild(i);
+                    auto* child = node->getChild(i);
                     mSwordGeometry.emplace_back(child);
                     child->accept(geometry);
                 }
@@ -874,6 +937,8 @@ namespace MWRender
             osg::Vec3f grip = osg::Matrixf::transform3x3(attachment.getTrans(), mBones[rightHand].mRestModel);
             grip -= mBindRight * (2.f * (grip * mBindRight));
             grip = osg::Matrixf::transform3x3(grip, osg::Matrixf::inverse(mBones[hand].mRestModel));
+            if (mLeftHanded)
+                grip = mSpearRightPalm;
             const osg::Vec3f root = mModelMatrices[upper].getTrans();
             const osg::Vec3f elbow = mModelMatrices[forearm].getTrans();
             const osg::Vec3f wrist = mModelMatrices[hand].getTrans();
@@ -894,11 +959,127 @@ namespace MWRender
             // stay intact. Finger locals therefore retain their imported curl.
         }
 
+        NifOsg::MatrixTransform* heldWeaponNode() const
+        {
+            return mLeftHanded ? mShieldNode.get() : mWeaponNode.get();
+        }
+
+        const osg::NodePath& heldWeaponParents() const
+        {
+            return mLeftHanded ? mShieldParents : mWeaponParents;
+        }
+
+        std::optional<osg::Vec3f> spearContact()
+        {
+            auto* node = heldWeaponNode();
+            bool changed = mSpearGeometry.size() != node->getNumChildren();
+            for (unsigned int i = 0; !changed && i < node->getNumChildren(); ++i)
+                changed = mSpearGeometry[i].get() != node->getChild(i);
+            if (changed)
+            {
+                GripGeometryVisitor geometry;
+                mSpearGeometry.clear();
+                for (unsigned int i = 0; i < node->getNumChildren(); ++i)
+                {
+                    auto* child = node->getChild(i);
+                    mSpearGeometry.emplace_back(child);
+                    child->accept(geometry);
+                }
+                for (auto& triangle : geometry.mTriangles)
+                    for (auto& vertex : triangle)
+                        vertex = mWeaponBasis * vertex;
+                mSpearContact = EldenPose::findSpearGrip(geometry.mTriangles);
+                if (mSpearContact)
+                {
+                    float low = mSpearContact->y(), high = low;
+                    for (const auto& triangle : geometry.mTriangles)
+                        for (const auto& vertex : triangle)
+                        {
+                            low = std::min(low, vertex.y());
+                            high = std::max(high, vertex.y());
+                        }
+                    // Leave a small palm margin above the butt when the pose's
+                    // hand spacing is wider than the lower part of the shaft.
+                    mSpearRearTravel = std::max(0.f, mSpearContact->y() - low - .04f * (high - low));
+                    mSpearContact = mWeaponBasis.inverse() * *mSpearContact;
+                }
+            }
+            return mSpearContact;
+        }
+
+        void applyWeapon()
+        {
+            auto* node = heldWeaponNode();
+            const osg::Matrixf parentMatrix = osg::computeLocalToWorld(heldWeaponParents());
+            osg::Vec3f translation, scale;
+            osg::Quat parent, scaleOrientation;
+            parentMatrix.decompose(translation, parent, scale, scaleOrientation);
+            osg::Quat postPose;
+            const osg::Matrixf handMatrix = osg::computeLocalToWorld(
+                mLeftHanded ? mShieldPoseParents : mWeaponPoseParents);
+            const std::size_t poseParent = mLeftHanded ? mShieldPoseParent : mWeaponPoseParent;
+            if (poseParent != sNoParent)
+            {
+                osg::Quat displayed;
+                handMatrix.decompose(translation, displayed, scale, scaleOrientation);
+                // Preserve first-person neck aiming without storing it in the
+                // animation blend, where repeated changes would accumulate it.
+                postPose = mModelRotations[poseParent].inverse() * displayed;
+            }
+            const osg::Quat facing(mFacing.shown(), osg::Vec3f(0, 0, 1));
+            mNativeWeaponRotation = node->mRotationScale.toOsgMatrix().getRotate();
+            mNativeWeaponTranslation = node->getMatrix().getTrans();
+            mOverriddenWeaponNode = node;
+            if (!mHaveWeaponBlendFrom)
+            {
+                mWeaponBlendFrom = mNativeWeaponRotation * parent * postPose.inverse() * facing.inverse();
+                mHaveWeaponBlendFrom = true;
+            }
+            mShownWeaponRotation.slerp(mWeaponBlend, mWeaponBlendFrom, mWeaponTargetRotation);
+            mShownWeaponRotation *= facing;
+            node->setRotation(mShownWeaponRotation * postPose * parent.inverse());
+            const osg::Vec3f palm = mLeftHanded
+                ? (mSpearLeftPalm * osg::computeLocalToWorld(mSpearLeftParents))
+                    * osg::Matrixf::inverse(parentMatrix)
+                : (mEmbeddedSpear
+                    ? (mEmbeddedSpearPalm * handMatrix) * osg::Matrixf::inverse(parentMatrix)
+                    : mNativeWeaponTranslation);
+            if (mAlignLeftWeapon)
+                node->setTranslation(palm);
+            if (const auto contact = mAlignSpear ? spearContact() : std::nullopt)
+            {
+                osg::Vec3f placement = palm - osg::Matrixf::transform3x3(*contact, node->getMatrix());
+                if (mTwoHandedSpear)
+                {
+                    // A two-handed spear's right hand is normally the rear
+                    // hand. Placing it at 40% left the front hand above
+                    // the midpoint. Keep the foremost palm at the measured
+                    // section, preserving the pose's changing hand spacing.
+                    // Very short shafts and wide sliding thrusts must first
+                    // keep the rear palm on the weapon, not beyond its butt.
+                    const osg::Vec3f supportPalm = ((mLeftHanded ? mSpearRightPalm : mSpearLeftPalm)
+                        * osg::computeLocalToWorld(mLeftHanded ? mSpearRightParents : mSpearLeftParents))
+                        * osg::Matrixf::inverse(parentMatrix);
+                    osg::Vec3f shaft = osg::Matrixf::transform3x3(
+                        mWeaponBasis.inverse() * osg::Vec3f(0, 1, 0), node->getMatrix());
+                    const float weaponScale = shaft.normalize();
+                    const float spacing = (supportPalm - palm) * shaft;
+                    const float shift = std::min(std::max(0.f, spacing),
+                        mSpearRearTravel * weaponScale + std::min(0.f, spacing));
+                    placement += shaft * shift;
+                }
+                node->setTranslation(placement);
+            }
+            mWeaponOverridden = true;
+            mHaveShownWeapon = true;
+        }
+
         void restoreWeapon()
         {
             if (mWeaponOverridden)
             {
-                mWeaponNode->setRotation(mNativeWeaponRotation);
+                mOverriddenWeaponNode->setRotation(mNativeWeaponRotation);
+                mOverriddenWeaponNode->setTranslation(mNativeWeaponTranslation);
                 mWeaponOverridden = false;
             }
         }
@@ -908,11 +1089,65 @@ namespace MWRender
             if (mShieldOverridden)
             {
                 mShieldNode->setRotation(mNativeShieldRotation);
+                mShieldNode->setTranslation(mNativeShieldTranslation);
                 mShieldOverridden = false;
             }
         }
 
-        void grip(std::string_view name, bool slidingGrip)
+        void applyOffhandWeapon()
+        {
+            const osg::Matrixf parentMatrix = osg::computeLocalToWorld(mShieldParents);
+            osg::Vec3f translation, scale;
+            osg::Quat parent, scaleOrientation;
+            parentMatrix.decompose(translation, parent, scale, scaleOrientation);
+            osg::Quat postPose;
+            if (mShieldPoseParent != sNoParent)
+            {
+                osg::Quat displayed;
+                osg::computeLocalToWorld(mShieldPoseParents).decompose(translation, displayed, scale, scaleOrientation);
+                postPose = mModelRotations[mShieldPoseParent].inverse() * displayed;
+            }
+            const osg::Quat facing(mFacing.shown(), osg::Vec3f(0, 0, 1));
+            mNativeShieldRotation = mShieldNode->mRotationScale.toOsgMatrix().getRotate();
+            mNativeShieldTranslation = mShieldNode->getMatrix().getTrans();
+            if (!mHaveShieldBlendFrom)
+            {
+                mShieldBlendFrom = mNativeShieldRotation * parent * postPose.inverse() * facing.inverse();
+                mHaveShieldBlendFrom = true;
+            }
+            mShownShieldRotation.slerp(mShieldBlend, mShieldBlendFrom, mShieldTargetRotation);
+            mShownShieldRotation *= facing;
+            mShieldNode->setRotation(mShownShieldRotation * postPose * parent.inverse());
+            const osg::Vec3f palm = (mSpearLeftPalm * osg::computeLocalToWorld(mSpearLeftParents))
+                * osg::Matrixf::inverse(parentMatrix);
+            osg::Vec3f placement = palm;
+            if (mAlignOffhandSpear)
+            {
+                bool changed = mOffhandGeometry.size() != mShieldNode->getNumChildren();
+                for (unsigned int i = 0; !changed && i < mShieldNode->getNumChildren(); ++i)
+                    changed = mOffhandGeometry[i].get() != mShieldNode->getChild(i);
+                if (changed)
+                {
+                    GripGeometryVisitor geometry;
+                    mOffhandGeometry.clear();
+                    for (unsigned int i = 0; i < mShieldNode->getNumChildren(); ++i)
+                    {
+                        auto* child = mShieldNode->getChild(i);
+                        mOffhandGeometry.emplace_back(child);
+                        child->accept(geometry);
+                    }
+                    mOffhandSpearContact = EldenPose::findSpearGrip(geometry.mTriangles);
+                }
+                if (mOffhandSpearContact)
+                    placement -= osg::Matrixf::transform3x3(*mOffhandSpearContact, mShieldNode->getMatrix());
+            }
+            mShieldNode->setTranslation(placement);
+            mShieldOverridden = true;
+            mHaveShownShield = true;
+        }
+
+        void grip(std::string_view name, bool slidingGrip, bool preserveLeftGrip = false,
+            bool leftSlidingGrip = false)
         {
             const auto* clip = mBank->find(name);
             if (!clip)
@@ -920,6 +1155,8 @@ namespace MWRender
             mBank->sample(*clip, 0.f, false, mLayer);
             for (bool left : { true, false })
             {
+                if (left && preserveLeftGrip)
+                    continue;
                 const std::size_t finger = left ? LFinger0 : RFinger0;
                 const std::size_t weapon = left ? LWeapon : RWeapon;
                 const auto axes = mBank->axesOffset(sJointNames[weapon]);
@@ -929,7 +1166,8 @@ namespace MWRender
                 // can move over 30 cm from the wrist; moving knuckles around
                 // that pivot stretches the hand and rotates its inferred frame.
                 // Carry the stance's curl from the animated wrist instead.
-                const std::size_t origin = mOffsets[slidingGrip ? (left ? LHand : RHand) : weapon];
+                const bool sliding = slidingGrip || (left && leftSlidingGrip);
+                const std::size_t origin = mOffsets[sliding ? (left ? LHand : RHand) : weapon];
                 const auto vectorAt = [](const std::vector<float>& pose, std::size_t at) {
                     return osg::Vec3f(pose[at], pose[at + 1], pose[at + 2]);
                 };
@@ -977,6 +1215,36 @@ namespace MWRender
                 std::copy_n(mLayer.begin() + *offset, 9, mSample.begin() + *offset);
         }
 
+        void initializeMirror()
+        {
+            const auto opposite = [](const std::string& name) {
+                std::string result = name;
+                if (name.starts_with("L_"))
+                    result[0] = 'R';
+                else if (name.starts_with("R_"))
+                    result[0] = 'L';
+                return result;
+            };
+            for (const auto& name : mBank->jointNames())
+                if (const auto from = mBank->jointOffset(opposite(name)))
+                    mMirrorOffsets.emplace_back(*mBank->jointOffset(name), *from);
+            for (const auto& name : mBank->orientedNames())
+                if (const auto from = mBank->axesOffset(opposite(name)))
+                    for (std::size_t axis = 0; axis < 9; axis += 3)
+                        mMirrorOffsets.emplace_back(*mBank->axesOffset(name) + axis, *from + axis);
+        }
+
+        void mirrorPose()
+        {
+            mMirrorSource = mSample;
+            for (const auto [target, from] : mMirrorOffsets)
+            {
+                mSample[target] = -mMirrorSource[from];
+                mSample[target + 1] = mMirrorSource[from + 1];
+                mSample[target + 2] = mMirrorSource[from + 2];
+            }
+        }
+
         void restore()
         {
             restoreWeapon();
@@ -986,9 +1254,12 @@ namespace MWRender
             mBow = false;
             mHaveBowFrom = false;
             mAlignSpear = false;
+            mAlignLeftWeapon = false;
             mHaveShownWeapon = false;
             mHaveWeaponBlendFrom = false;
             mAlignShield = false;
+            mAlignOffhandWeapon = false;
+            mAlignOffhandSpear = false;
             mHaveShownShield = false;
             mHaveShieldBlendFrom = false;
             mFacing.reset();
@@ -1022,7 +1293,7 @@ namespace MWRender
     };
 
     EldenAnimation::EldenAnimation(const Animation::NodeMap& nodes, osg::Group& objectRoot,
-        std::shared_ptr<const EldenCombat::AnimationBank> bank, bool requireFullBody)
+        std::shared_ptr<const EldenCombat::AnimationBank> bank, bool requireFullBody, bool embeddedSpear)
         : mImpl(std::make_shared<Impl>())
     {
         auto& state = *mImpl;
@@ -1030,6 +1301,7 @@ namespace MWRender
         state.mBank = std::move(bank);
         if (!state.mBank)
             return;
+        state.initializeMirror();
         for (std::size_t joint = 0; joint != JointCount; ++joint)
         {
             const auto offset = state.mBank->jointOffset(sJointNames[joint]);
@@ -1206,8 +1478,16 @@ namespace MWRender
         // finger or leg bones. These virtual joints only define orientations;
         // no absent bone or mesh is created or translated.
         const osg::Vec3f torso = state.mBindJoints[Neck] - state.mBindJoints[Pelvis];
-        if (requireFullBody && (!std::isfinite(torso.length()) || torso.length() < 1e-5f))
+        if (requireFullBody && (!std::isfinite(torso.length()) || torso.length() < 1e-5f
+            || torso.z() < .6f * torso.length()
+            || state.mBindJoints[LFoot].z() >= state.mBindJoints[Pelvis].z()
+            || state.mBindJoints[RFoot].z() >= state.mBindJoints[Pelvis].z()))
+        {
+            // Matching Bip01 labels are insufficient: rats and other native
+            // quadrupeds share them. Player clips require an upright torso and
+            // two legs below the hips, including replacement creature meshes.
             return;
+        }
         for (std::size_t joint = Spine; joint <= Spine2; ++joint)
             if (!state.mHaveBindJoint[joint])
                 state.mBindJoints[joint] = state.mBindJoints[Pelvis] + torso * (float(joint) / 4.f);
@@ -1275,6 +1555,17 @@ namespace MWRender
         for (std::size_t j = 0; j != JointCount; ++j)
             reference[j] = fromSource(state.mSample, state.mOffsets[j]);
         const AnatomicalFrame referenceBody = anatomy(reference);
+        for (std::size_t side = 0; side < state.mArmPlanes.size(); ++side)
+        {
+            const std::size_t arm = side == 0 ? LClavicle : RClavicle;
+            const osg::Vec3f upper = reference[arm + 2] - reference[arm + 1];
+            const osg::Vec3f lower = reference[arm + 3] - reference[arm + 2];
+            // Source elbow flexion has a fixed sign. Calibrate it once in
+            // neutral; choosing a new hemisphere during a swing can turn the
+            // shoulder inside out while its deeply bent elbow stays still.
+            state.mArmPlaneSigns[side] = (upper ^ lower) * (upper ^ referenceBody.mChestForward) < 0.f
+                ? -1.f : 1.f;
+        }
         for (Impl::Bone& bone : state.mBones)
             if (bone.mJoint == LFoot || bone.mJoint == LToe || bone.mJoint == RFoot || bone.mJoint == RToe)
             {
@@ -1296,9 +1587,14 @@ namespace MWRender
         for (std::size_t i = 0; i < state.mBones.size(); ++i)
         {
             const std::array<std::size_t, 4> arm{ LUpperArm, LForearm, LHand, RHand };
+            constexpr std::array<std::size_t, 4> leftArm{ RUpperArm, RForearm, RHand, LHand };
             for (std::size_t j = 0; j < arm.size(); ++j)
+            {
                 if (state.mBones[i].mJoint == arm[j])
                     state.mSwordArm[j] = i;
+                if (state.mBones[i].mJoint == leftArm[j])
+                    state.mLeftSwordArm[j] = i;
+            }
             constexpr std::array bowArm{ RUpperArm, RForearm, RHand };
             for (std::size_t j = 0; j < bowArm.size(); ++j)
                 if (state.mBones[i].mJoint == bowArm[j])
@@ -1333,7 +1629,8 @@ namespace MWRender
         }
 
         state.mWeaponAxes = state.mBank->axesOffset("R_Weapon");
-        if (const auto found = nodes.find("weapon bone"); found != nodes.end() && state.mWeaponAxes)
+        if (const auto found = nodes.find(embeddedSpear ? "hircine_spear" : "weapon bone");
+            found != nodes.end() && state.mWeaponAxes)
         {
             state.mWeaponNode = dynamic_cast<NifOsg::MatrixTransform*>(found->second.get());
             if (state.mWeaponNode)
@@ -1344,8 +1641,77 @@ namespace MWRender
                     state.mWeaponParents = paths.front();
                     state.mWeaponParents.pop_back();
                     std::erase(state.mWeaponParents, &objectRoot);
+                    // A replacement rig may put extra attachment helpers below
+                    // the hand. Compare the nearest retargeted ancestor with
+                    // its displayed pose, keeping native helper transforms out
+                    // of the view correction.
+                    for (osg::Node* parent : state.mWeaponParents)
+                    {
+                        const auto poseParent = index.find(dynamic_cast<osg::MatrixTransform*>(parent));
+                        if (poseParent != index.end())
+                            state.mWeaponPoseParent = poseParent->second;
+                    }
+                    if (state.mWeaponPoseParent != sNoParent)
+                    {
+                        for (osg::Node* parent : state.mWeaponParents)
+                        {
+                            state.mWeaponPoseParents.push_back(parent);
+                            if (parent == state.mBones[state.mWeaponPoseParent].mNode.get())
+                                break;
+                        }
+                    }
+                    if (embeddedSpear)
+                    {
+                        const auto hand = nodes.find("bip01 r hand");
+                        if (hand == nodes.end() || !index.contains(hand->second.get()))
+                        {
+                            state.mValid = false;
+                            return;
+                        }
+                        const auto handPaths = hand->second->getParentalNodePaths(&objectRoot);
+                        if (handPaths.empty())
+                        {
+                            state.mValid = false;
+                            return;
+                        }
+                        state.mWeaponPoseParent = index.at(hand->second.get());
+                        state.mWeaponPoseParents = handPaths.front();
+                        std::erase(state.mWeaponPoseParents, &objectRoot);
+                        // Hircine's built-in spear points along +Z; ordinary
+                        // equipped Morrowind spears point along +Y.
+                        state.mWeaponBasis.makeRotate(osg::Vec3f(0, 0, 1), osg::Vec3f(0, 1, 0));
+                        state.mEmbeddedSpearPalm = ((state.mBindJoints[RFinger1] + state.mBindJoints[RFinger2]) * .5f)
+                            * osg::Matrixf::inverse(state.mBones[state.mWeaponPoseParent].mRestModel);
+                        if (!state.spearContact())
+                        {
+                            state.mValid = false;
+                            return;
+                        }
+                        state.mEmbeddedSpear = true;
+                    }
+                    if (const auto leftHand = nodes.find("bip01 l hand");
+                        leftHand != nodes.end() && index.contains(leftHand->second.get())
+                        && state.mHaveBindJoint[LFinger1] && state.mHaveBindJoint[LFinger2])
+                    {
+                        const auto leftPaths = leftHand->second->getParentalNodePaths(&objectRoot);
+                        if (!leftPaths.empty())
+                        {
+                            state.mSpearLeftParents = leftPaths.front();
+                            std::erase(state.mSpearLeftParents, &objectRoot);
+                            state.mSpearLeftPalm
+                                = ((state.mBindJoints[LFinger1] + state.mBindJoints[LFinger2]) * .5f)
+                                * osg::Matrixf::inverse(state.mBones[index.at(leftHand->second.get())].mRestModel);
+                        }
+                    }
+                    if (embeddedSpear && state.mSpearLeftParents.empty())
+                    {
+                        state.mValid = false;
+                        return;
+                    }
                     for (bool before : { true, false })
                     {
+                        if (embeddedSpear && !before)
+                            continue;
                         osg::ref_ptr<Impl::WeaponCallback> callback = new Impl::WeaponCallback;
                         callback->mState = mImpl;
                         callback->mBeforeNative = before;
@@ -1358,6 +1724,11 @@ namespace MWRender
             }
         }
 
+        if (embeddedSpear && !state.mEmbeddedSpear)
+        {
+            state.mValid = false;
+            return;
+        }
         state.mShieldAxes = state.mBank->axesOffset("L_Weapon");
         if (const auto found = nodes.find("shield bone"); found != nodes.end() && state.mShieldAxes)
         {
@@ -1370,6 +1741,17 @@ namespace MWRender
                     state.mShieldParents = paths.front();
                     state.mShieldParents.pop_back();
                     std::erase(state.mShieldParents, &objectRoot);
+                    for (osg::Node* parent : state.mShieldParents)
+                        if (const auto poseParent = index.find(dynamic_cast<osg::MatrixTransform*>(parent));
+                            poseParent != index.end())
+                            state.mShieldPoseParent = poseParent->second;
+                    if (state.mShieldPoseParent != sNoParent)
+                        for (osg::Node* parent : state.mShieldParents)
+                        {
+                            state.mShieldPoseParents.push_back(parent);
+                            if (parent == state.mBones[state.mShieldPoseParent].mNode.get())
+                                break;
+                        }
                     for (bool before : { true, false })
                     {
                         osg::ref_ptr<Impl::ShieldCallback> callback = new Impl::ShieldCallback;
@@ -1382,6 +1764,25 @@ namespace MWRender
                 else
                     state.mShieldNode = nullptr;
             }
+        }
+        if (const auto rightHand = nodes.find("bip01 r hand"); rightHand != nodes.end()
+            && index.contains(rightHand->second.get()) && state.mHaveBindJoint[RFinger1]
+            && state.mHaveBindJoint[RFinger2])
+        {
+            const auto paths = rightHand->second->getParentalNodePaths(&objectRoot);
+            if (!paths.empty())
+            {
+                state.mSpearRightParents = paths.front();
+                std::erase(state.mSpearRightParents, &objectRoot);
+                state.mSpearRightPalm = ((state.mBindJoints[RFinger1] + state.mBindJoints[RFinger2]) * .5f)
+                    * osg::Matrixf::inverse(state.mBones[index.at(rightHand->second.get())].mRestModel);
+            }
+        }
+        if (state.mWeaponNode || state.mShieldNode)
+        {
+            osg::ref_ptr<Impl::SpearCallback> finish = new Impl::SpearCallback;
+            finish->mState = mImpl;
+            mControllers.emplace_back(&objectRoot, finish);
         }
         // Prefer the optional left attachment, matching native weapon lookup.
         // Original Morrowind skeletons use the right attachment for bows too.
@@ -1459,6 +1860,11 @@ namespace MWRender
         clear();
     }
 
+    bool EldenAnimation::hasEmbeddedSpear() const
+    {
+        return mImpl->mValid && mImpl->mEmbeddedSpear;
+    }
+
     bool EldenAnimation::valid() const
     {
         return mImpl->mValid;
@@ -1466,7 +1872,8 @@ namespace MWRender
 
     bool EldenAnimation::play(std::string_view clipName, float frame, bool loop, float duration, float yaw,
         std::string_view leftArmClip, std::string_view rightArmClip, std::string_view gripClip, bool alignSpear,
-        bool twoHandedSword, bool upperBodyOnly, bool bow, float pitch, float bowDraw)
+        bool twoHandedSword, bool upperBodyOnly, bool bow, float pitch, float bowDraw, bool leftHanded,
+        bool offhandWeapon, bool offhandSpear)
     {
         auto& state = *mImpl;
         if (!state.mValid || !std::isfinite(frame) || !std::isfinite(yaw) || !std::isfinite(pitch)
@@ -1482,17 +1889,51 @@ namespace MWRender
             return false;
         }
         duration = std::isfinite(duration) ? std::max(duration, 0.f) : 0.f;
+        const bool handChanged = state.mLeftHanded != leftHanded;
+        if (handChanged)
+        {
+            state.restoreWeapon();
+            state.mHaveShownWeapon = false;
+            state.mHaveWeaponBlendFrom = false;
+            state.mSpearGeometry.clear();
+            state.mSpearContact.reset();
+            state.mSwordGeometry.clear();
+            state.mSwordContact.reset();
+        }
+        state.mLeftHanded = leftHanded;
         state.mBank->sample(*clip, frame, loop, state.mSample);
         state.mLayerFrame += duration * 30.f;
         state.overlay(leftArmClip, true);
         state.overlay(rightArmClip, false);
-        state.grip(gripClip, alignSpear);
-        const bool spear = alignSpear && state.mWeaponNode && state.mWeaponAxes;
+        alignSpear = alignSpear || state.mEmbeddedSpear;
+        const bool shieldLayer = (leftArmClip == "a000_000100" && rightArmClip != leftArmClip)
+            || leftArmClip == "a015_000100";
+        // Left and paired attacks author the offhand weapon's own grip. The
+        // right weapon's carry curl can rotate that palm away from its shaft.
+        const bool offhandAttack = offhandWeapon && !leftHanded && clipName.size() >= 8
+            && (clipName.substr(5, 3) == "034" || clipName.substr(5, 3) == "035");
+        state.grip(gripClip, alignSpear, shieldLayer || offhandAttack, offhandSpear);
+        const bool shieldStance = clipName.starts_with("a015_") || gripClip.starts_with("a015_");
+        // Weapon action tables share right-led clips. Reflection swaps both
+        // anatomical sides and oriented equipment axes. Shield and grip-swap
+        // clips already author the left arm and must retain their source pose.
+        if (leftHanded && !shieldStance && !clipName.starts_with("a000_029"))
+            state.mirrorPose();
+        const auto weaponAxes = leftHanded ? state.mShieldAxes : state.mWeaponAxes;
+        const bool spear = alignSpear && state.heldWeaponNode() && weaponAxes;
+        const bool leftWeapon = leftHanded && !shieldStance && state.mShieldNode
+            && state.mShieldAxes && !state.mSpearLeftParents.empty();
+        const bool offhand = offhandWeapon && !leftHanded && state.mShieldNode
+            && state.mShieldAxes && !state.mSpearLeftParents.empty();
+        // Casts and death poses leave the other hand free, even when Guile's
+        // spear is embedded. Only the two-handed stance owns both palms.
+        state.mTwoHandedSpear = spear
+            && !(leftHanded ? state.mSpearRightParents : state.mSpearLeftParents).empty()
+            && gripClip == "a013_000000";
         // Shield guards supply these arm layers. Other two-handed weapons
         // have their own guard layers; their attachments stay native.
-        const bool shield = ((leftArmClip == "a000_000100" && rightArmClip != leftArmClip)
-                                || leftArmClip == "a015_000100")
-            && state.mBank->find(leftArmClip) && state.mShieldNode && state.mShieldAxes;
+        const bool shield = ((shieldLayer && state.mBank->find(leftArmClip)) || (leftHanded && shieldStance))
+            && state.mShieldNode && state.mShieldAxes && !offhand;
         // Buffered rolls and other repeated actions can restart the same clip.
         // Blend from the displayed pose when its action clock resets, while
         // ordinary gait loop seams and a frozen action retain their blend.
@@ -1500,10 +1941,12 @@ namespace MWRender
         const bool clipChanged = state.mClip != clipName || restarted;
         const bool changed = clipChanged || state.mLeftArmClip != leftArmClip
             || state.mRightArmClip != rightArmClip || state.mGripClip != gripClip || state.mAlignSpear != spear
-            || state.mAlignShield != shield || state.mUpperBodyOnly != upperBodyOnly || state.mBow != bow;
+            || state.mAlignShield != shield || state.mUpperBodyOnly != upperBodyOnly || state.mBow != bow
+            || handChanged || state.mAlignLeftWeapon != leftWeapon || state.mAlignOffhandWeapon != offhand
+            || state.mAlignOffhandSpear != (offhand && offhandSpear);
         state.mFrame = frame;
         state.mLoop = loop;
-        if (!spear)
+        if (!spear && !leftWeapon)
         {
             state.restoreWeapon();
             state.mHaveShownWeapon = false;
@@ -1520,12 +1963,27 @@ namespace MWRender
         state.mBowDraw = std::isfinite(bowDraw) ? std::clamp(bowDraw, 0.f, 1.f) : 0.f;
         state.mAlignSpear = spear;
         state.mAlignShield = shield;
+        state.mAlignOffhandWeapon = offhand;
+        state.mAlignOffhandSpear = offhand && offhandSpear;
+        state.mAlignLeftWeapon = leftWeapon;
+        if (leftWeapon)
+        {
+            state.restoreShield();
+            state.mHaveShownShield = false;
+            state.mHaveShieldBlendFrom = false;
+        }
         if (changed)
         {
-            // Clip/layer changes already crossfade from the displayed pose.
-            // Start each new source pose with its own anatomical reference.
             for (auto& plane : state.mLimbPlanes)
                 plane.reset();
+            // A new clip immediately supplies its calibrated signed elbow
+            // plane; the displayed pose crossfade handles the transition.
+            // Never select a fresh torso-facing hemisphere for that elbow.
+            for (auto& plane : state.mArmPlanes)
+                if (!state.mEnabled)
+                    plane.reset();
+                else
+                    plane.restart();
             state.mFacing.start(yaw);
             const osg::Quat inverseFacing = osg::Quat(state.mFacing.from(), osg::Vec3f(0, 0, 1)).inverse();
             if (state.mHaveBowFrom)
@@ -1568,15 +2026,21 @@ namespace MWRender
         float blend = state.mFadeLength > 0.f ? std::clamp(state.mFade / state.mFadeLength, 0.f, 1.f) : 1.f;
         blend = blend * blend * (3.f - 2.f * blend);
         const osg::Quat facing(state.mFacing.update(yaw, blend), osg::Vec3f(0, 0, 1));
-        if (spear)
+        if (spear || leftWeapon)
         {
             state.mWeaponBlend = blend;
-            state.mWeaponTargetRotation = frameRotation(fromSource(state.mSample, *state.mWeaponAxes),
-                fromSource(state.mSample, *state.mWeaponAxes + 3));
+            state.mWeaponTargetRotation = state.mWeaponBasis * frameRotation(fromSource(state.mSample, *weaponAxes),
+                fromSource(state.mSample, *weaponAxes + 3));
         }
-        if (shield || state.mHaveShownShield)
+        if (shield || offhand || state.mHaveShownShield)
             state.mShieldBlend = blend;
-        if (shield)
+        if (offhand)
+            // The authored left socket points its +Y toward the little finger;
+            // native weapon meshes point +Y from the grip toward the blade.
+            // Turn the model about local X, keeping its edge toward the knuckles.
+            state.mShieldTargetRotation = frameRotation(fromSource(state.mSample, *state.mShieldAxes),
+                -fromSource(state.mSample, *state.mShieldAxes + 3));
+        else if (shield)
         {
             // Native shields lie in local XY, with +Y towards the top and
             // +Z out of the face. The source shield uses +X up and -Z out;
@@ -1598,14 +2062,14 @@ namespace MWRender
             positions[j] = fromSource(state.mSample, state.mOffsets[j]);
         const AnatomicalFrame body = anatomy(positions);
         std::array<osg::Vec3f, 10> limbPlanes;
-        for (std::size_t i = 0; i != 4; ++i)
+        for (std::size_t i = 0; i != state.mArmPlanes.size(); ++i)
         {
-            const std::size_t arm = i < 2 ? LClavicle : RClavicle;
+            const std::size_t arm = i == 0 ? LClavicle : RClavicle;
             const osg::Vec3f upper = positions[arm + 2] - positions[arm + 1];
             const osg::Vec3f lower = positions[arm + 3] - positions[arm + 2];
-            const osg::Vec3f primary = i % 2 == 0 ? upper : lower;
-            limbPlanes[i]
-                = state.mLimbPlanes[i].secondary(upper, lower, primary, primary ^ body.mChestForward, duration);
+            limbPlanes[i * 2] = state.mArmPlanes[i].secondary(upper, lower, upper,
+                upper ^ body.mChestForward, duration, state.mArmPlaneSigns[i]);
+            limbPlanes[i * 2 + 1] = unit(upper ^ limbPlanes[i * 2], body.mRight) ^ lower;
         }
         for (std::size_t i = 0; i != 4; ++i)
         {
@@ -1613,14 +2077,14 @@ namespace MWRender
             const osg::Vec3f upper = positions[leg + 1] - positions[leg];
             const osg::Vec3f lower = positions[leg + 2] - positions[leg + 1];
             const osg::Vec3f primary = i % 2 == 0 ? upper : lower;
-            limbPlanes[i + 4] = state.mLimbPlanes[i + 4].secondary(upper, lower, primary, -body.mRight, duration);
+            limbPlanes[i + 4] = state.mLimbPlanes[i].secondary(upper, lower, primary, -body.mRight, duration);
         }
         for (std::size_t i = 0; i != 2; ++i)
         {
             const std::size_t foot = i == 0 ? LFoot : RFoot;
             const osg::Vec3f primary = positions[foot + 1] - positions[foot];
             limbPlanes[i + 8]
-                = state.mLimbPlanes[i + 8].secondary(primary, body.mRight ^ primary, primary, body.mRight, duration);
+                = state.mLimbPlanes[i + 4].secondary(primary, body.mRight ^ primary, primary, body.mRight, duration);
         }
         const osg::Vec3f headUp = state.mHeadAxes ? fromSource(state.mSample, *state.mHeadAxes) : body.mUp;
         const osg::Vec3f headForward

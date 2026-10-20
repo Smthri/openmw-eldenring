@@ -759,6 +759,7 @@ namespace MWMechanics
             auto& stats = actor.getClass().getCreatureStats(actor);
             stats.getEldenCombatInput() = {};
             stats.getEldenCombat().clearRequests();
+            stats.getEldenBossArt().cancel();
             stats.setAttackingOrSpell(false);
             mAttack = false;
             mEldenActive = false;
@@ -816,7 +817,8 @@ namespace MWMechanics
         {
             ESM::RefId type;
             getActiveWeapon(actor, &type);
-            input.mTwoHanded = isWeaponType(type) && (getWeaponType(type)->mFlags & ESM::WeaponType::TwoHanded);
+            input.mTwoHanded = !config.mHasLeftWeapon && isWeaponType(type)
+                && (getWeaponType(type)->mFlags & ESM::WeaponType::TwoHanded);
         }
         const auto action = combat.action();
         const auto& definition = combat.definition();
@@ -844,6 +846,7 @@ namespace MWMechanics
         input.mLight.mHeld = false;
         input.mCritical.mHeld = false;
         input.mDodge.mHeld = false;
+        input.mSpearThrust = {};
         mEldenHeavyHold = std::max(0.f, mEldenHeavyHold - duration);
         mEldenGuardHold = std::max(0.f, mEldenGuardHold - duration);
         const bool heavyHeld = mEldenHeavyHold > 0.f;
@@ -867,6 +870,41 @@ namespace MWMechanics
         if (mEldenDodgeQueued || action == EldenAction::Roll || action == EldenAction::CrouchRoll
             || action == EldenAction::Backstep)
             actorClass.getMovementSettings(actor).mRotation[2] = 0.f;
+
+        auto& bossArt = stats.getEldenBossArt();
+        if (bossArt.preparing())
+        {
+            // Stand visibly in the native casting aura before the weapon
+            // swing. Moving out of reach/LOS or interrupting it cancels the
+            // art; it cannot silently chase or replace a selected native spell.
+            stopCombatMove();
+            mMovement.mPosition[0] = mMovement.mPosition[1] = 0.f;
+            auto& movement = actorClass.getMovementSettings(actor);
+            movement.mPosition[0] = movement.mPosition[1] = 0.f;
+            input.mSprint = false;
+            input.mHeavy = input.mGuard = input.mLight = {};
+            mAttack = false;
+            stats.setAttackingOrSpell(false);
+            if (!inReach || stamina < 0.4f || !characterController.readyToStartAttack())
+                bossArt.cancel();
+            else if (bossArt.launch(combat))
+            {
+                const bool thrust = bossArt.profile()->mSpearThrust;
+                mEldenComboButton = thrust ? AttackButton::Light : AttackButton::Heavy;
+                mEldenComboLimit = 1;
+                mEldenHeavyFinisher = false;
+                mEldenHeavyHold = thrust ? 0.f : 0.1f;
+                if (thrust)
+                    input.mSpearThrust = { false, true, true };
+                else
+                    input.mHeavy = { true, true, false };
+                mEldenAttackQueued = true;
+                mEldenAttackRequestSequence = combat.sequence();
+                mAttack = true;
+                stats.setAttackingOrSpell(true);
+            }
+            return true;
+        }
 
         // Observe the telegraph, not the damage callback. Recovery and attacks
         // facing elsewhere are not threats. One swing gets one defensive choice.
@@ -1049,6 +1087,24 @@ namespace MWMechanics
         if (!idle || !mEldenTactics.attackReady() || mEldenDecisionTimer > 0.f
             || !characterController.readyToStartAttack())
             return true;
+
+        if (!threatened && stamina >= 0.4f && beginEldenBossArt(actor))
+        {
+            // Commit the selected melee action for its tell; native spell and
+            // equipment selection resumes after this single swing.
+            mActionCooldown = std::max(mActionCooldown, bossArt.profile()->mTellSeconds + 0.2f);
+            combat.clearRequests();
+            mEldenAttackQueued = false;
+            mEldenComboLimit = 1;
+            mEldenHeavyHold = mEldenGuardHold = 0.f;
+            input.mHeavy = input.mLight = input.mGuard = {};
+            input.mSprint = false;
+            stopCombatMove();
+            mMovement.mPosition[0] = mMovement.mPosition[1] = 0.f;
+            auto& movement = actorClass.getMovementSettings(actor);
+            movement.mPosition[0] = movement.mPosition[1] = 0.f;
+            return true;
+        }
 
         mEldenDecisionTimer = 0.18f + 0.12f * Misc::Rng::rollProbability(prng);
         mEldenAttackDelayScale = 1.f + 0.4f * Misc::Rng::rollProbability(prng);

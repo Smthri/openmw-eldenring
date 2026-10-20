@@ -265,6 +265,68 @@ namespace
         }
     }
 
+    void signedShoulderPlanes()
+    {
+        using MWRender::EldenPose::ArmBendPlane;
+        using MWRender::EldenPose::unit;
+        const osg::Vec3f upper(1, 0, 0), reference(0, 0, 1);
+        for (const float sign : { -1.f, 1.f })
+            for (const float fps : { 30.f, 60.f, 144.f })
+            {
+                ArmBendPlane plane;
+                for (int tick = 0; tick <= static_cast<int>(fps); ++tick)
+                {
+                    const float angle = 2.f * pi * tick / fps;
+                    const osg::Vec3f lower(.6f, .8f * std::cos(angle), .8f * std::sin(angle));
+                    const auto expected = unit(((upper ^ lower) * sign) ^ upper, reference);
+                    const auto shown = unit(plane.secondary(upper, lower, upper, reference, 1.f / fps, sign), reference);
+                    check(shown * expected > .9999f,
+                        "conditioned elbow plane lost its calibrated sign while circling the torso");
+                    check((plane.secondary(upper, lower, upper, reference, 1.f / fps, sign) - shown).length() < 1e-5f,
+                        "sampling a held shoulder pose twice changed its roll");
+                }
+
+                plane.reset();
+                plane.secondary(upper, { 1, .5f, 0 }, upper, reference, 1.f / fps, sign);
+                const auto before = unit(plane.secondary(upper, { 1, 0, 0 }, upper, reference, 1.f / fps, sign), reference);
+                const auto frozen = unit(plane.secondary(upper, { 1, -.5f, 0 }, upper, reference, 0.f, sign), reference);
+                check(before * frozen > .9999f, "zero-time shoulder sample advanced an ambiguous half-turn");
+                osg::Vec3f previous = frozen;
+                for (int tick = 1; tick <= static_cast<int>(fps); ++tick)
+                {
+                    // Tiny authored variation advances the sample; a truly
+                    // identical hit-stop pose must remain idempotent instead.
+                    const osg::Vec3f lower(1, -.5f - .00001f * tick, 0);
+                    const auto shown = unit(plane.secondary(upper, lower, upper, reference, 1.f / fps, sign), reference);
+                    const float change = std::acos(std::clamp(previous * shown, -1.f, 1.f));
+                    check(std::isfinite(change) && change <= 8.f * pi / fps + .001f,
+                        "straight-elbow recovery snapped through its antipodal plane");
+                    previous = shown;
+                }
+                const auto expected = unit(((upper ^ osg::Vec3f(1, -.5f, 0)) * sign) ^ upper, reference);
+                check(previous * expected > .9999f,
+                    "straight-elbow recovery permanently retained an inverted shoulder hemisphere");
+                plane.restart();
+                const auto restarted = unit(plane.secondary(upper, { 1, .5f, 0 }, upper, reference, 0.f, sign), reference);
+                check(restarted * expected < -.9999f,
+                    "new clip inherited an old elbow hemisphere instead of its signed target");
+
+                plane.reset();
+                plane.secondary(upper, { 1, -.5f * sign, 0 }, upper, reference, 1.f / fps, sign);
+                const osg::Vec3f nearlyStraight(1, -.001f * sign, 0);
+                const auto incoming = plane.secondary(upper, nearlyStraight, upper, reference, 1.f / fps, sign);
+                for (const float duration : { 0.f, 1.f / fps })
+                {
+                    plane.restart();
+                    const auto outgoing = plane.secondary(upper, nearlyStraight, upper, reference, duration, sign);
+                    check((incoming - outgoing).length() < 1e-5f,
+                        "nearly straight clip boundary replaced the transported shoulder with torso axes");
+                    check(plane.secondary(upper, nearlyStraight, upper, reference, duration, sign) == outgoing,
+                        "near-straight restarted pose was not idempotent");
+                }
+            }
+    }
+
     void verticalToes()
     {
         const osg::Vec3f right(1, 0, 0);
@@ -587,6 +649,7 @@ int main(int argc, char** argv)
         handReach();
         raisedKnee();
         swingingElbows();
+        signedShoulderPlanes();
         verticalToes();
         parallelLimbFrames();
         neutralFeet();

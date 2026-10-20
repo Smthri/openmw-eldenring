@@ -17,6 +17,9 @@ namespace MWMechanics
     // Called once when an accepted dodge starts, including a buffered dodge.
     void playEldenDodgeSound(const MWWorld::Ptr& actor, EldenCombat::Action action);
     void playEldenGuardCounterSound(const MWWorld::Ptr& actor);
+    // Begin an interruptible native magic tell before one AI heavy attack.
+    bool beginEldenBossArt(const MWWorld::Ptr& actor);
+    void updateEldenBossArt(const MWWorld::Ptr& actor, float duration);
 
     // True consumes a magic bolt before direct/area effects and plays the native miss cue.
     bool dodgeEldenMagicProjectile(const MWWorld::Ptr& victim);

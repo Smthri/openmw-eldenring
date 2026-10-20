@@ -72,6 +72,7 @@ namespace MWInput
         {
             auto& stats = player.getClass().getCreatureStats(player);
             stats.getEldenCombat().cancelInputActions();
+            stats.getEldenGripTransition().reset();
             auto& input = stats.getEldenCombatInput();
             const bool twoHanded = input.mTwoHanded;
             const bool twoHandedLeft = input.mTwoHandedLeft;

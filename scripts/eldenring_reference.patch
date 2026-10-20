@@ -3,6 +3,28 @@ Source-only changes for ELDEN-RING-Combat-Rewrite revision
 MIT license: scripts/eldenring_music/LICENSE-MIT.txt.
 Contains no generated timings, animation poses, or game archives.
 
+diff --git a/src/sim/data.rs b/src/sim/data.rs
+index 5ac6670..6a52a19 100644
+--- a/src/sim/data.rs
++++ b/src/sim/data.rs
+@@ -347,6 +347,8 @@ pub struct AirAttackDef {
+     pub radius: f32,
+     /// As `Hit::blade`, for the swing in the air.
+     pub blade: &'static [[f32; 6]],
++    /// Complete contact sequence for adapters; legacy sandbox uses the first hit above.
++    pub hits: &'static [Hit],
+ }
+ 
+ #[derive(Clone, Copy, Debug)]
+@@ -364,6 +366,8 @@ pub struct Hit {
+     pub stop: f32,
+     /// Thickness of the hit capsule around the blade, metres.
+     pub radius: f32,
++    /// The source weapon hand; paired contact order need not alternate.
++    pub left_hand: bool,
+     /// The blade's two ends on each frame from `from` (rounded down) to `to`
+     /// (rounded up), as [x, y, z, x, y, z] in the character's own space.
+     pub blade: &'static [[f32; 6]],
 diff --git a/tools/bake_anims.py b/tools/bake_anims.py
 index 96c3368..d44c7b5 100644
 --- a/tools/bake_anims.py
@@ -281,10 +303,58 @@ index 381669a..ae0d605 100644
  
  def _wstr(data: bytes, off: int) -> str:
 diff --git a/tools/extract.py b/tools/extract.py
-index 49ab59e..bb57506 100644
+index 49ab59e..808ea9e 100644
 --- a/tools/extract.py
 +++ b/tools/extract.py
-@@ -397,7 +397,16 @@ def fnum(v):
+@@ -312,24 +312,32 @@ class Source:
+ 
+     def anim(self, file, anim_id):
+         """The animation whose events apply, following event imports."""
+-        table = self.table(file)
+-        anim = table.get(anim_id)
+-        for _ in range(4):
+-            if anim is None or anim.import_from is None or anim.import_from not in table:
+-                break
+-            anim = table[anim.import_from]
+-        return anim
++        visited = set()
++        while (file, anim_id) not in visited:
++            visited.add((file, anim_id))
++            anim = self.table(file).get(anim_id)
++            if anim is None or anim.import_from is None:
++                return anim
++            category, anim_id = divmod(anim.import_from, 1000000)
++            file = f"a{category:02d}"
++        return None
+ 
+     def hkx_name(self, file, anim_id):
+         """Name of the HKX this animation plays: its own, or the one it borrows."""
+-        own = clip_name(file, anim_id)
+-        if own in self.hkx:
+-            return own
+-        entry = self.table(file).get(anim_id)
+-        if entry is not None and entry.hkx_from is not None:
+-            borrowed = "a%03d_%06d" % divmod(entry.hkx_from, 1000000)
+-            if borrowed in self.hkx:
+-                return borrowed
++        visited = set()
++        while (file, anim_id) not in visited:
++            visited.add((file, anim_id))
++            own = clip_name(file, anim_id)
++            if own in self.hkx:
++                return own
++            entry = self.table(file).get(anim_id)
++            if entry is None:
++                return None
++            borrowed = entry.hkx_from if entry.hkx_from is not None else entry.import_from
++            if borrowed is None:
++                return None
++            category, anim_id = divmod(borrowed, 1000000)
++            file = f"a{category:02d}"
+         return None
+ 
+     def motion(self, file, anim_id):
+@@ -397,7 +405,16 @@ def fnum(v):
  
  
  def hit_events(anim):
@@ -302,6 +372,153 @@ index 49ab59e..bb57506 100644
  
  
  def blend_frames(src, file, anim_id):
+@@ -463,10 +480,7 @@ def action_def(src, name, file, anim_id, variation, reaction=False, span=None):
+             continue
+         left_hand = left_handed(name, judge, left_hand)
+         blade = src.blade(file, anim_id, start, end, left_hand, span)
+-        hit_list.append(
+-            "Hit { from: %.1f, to: %.1f, mv: %.2f, guard_damage: %.2f, stamina: %.1f, stop: %.3f, radius: %.2f, blade: %s }"
+-            % (start, end, mv, stam_dmg, cost, hit_stop, radius, blade_literal(blade))
+-        )
++        hit_list.append(hit_literal(start, end, got, left_hand, blade))
+         if len(hit_list) == 1:
+             stamina = float(cost)
+     charge = "Some((%.1f, %.1f))" % charging[0] if charging else "None"
+@@ -511,6 +525,30 @@ def blade_literal(blade):
+     return "&[" + ", ".join("[" + ", ".join("%.3f" % v for v in row) + "]" for row in blade) + "]"
+ 
+ 
++def hit_literal(start, end, values, left_hand, blade):
++    cost, mv, stam_dmg, hit_stop, radius, _anchor = values
++    return (
++        "Hit { from: %.1f, to: %.1f, mv: %.2f, guard_damage: %.2f, stamina: %.1f, stop: %.3f, radius: %.2f, left_hand: %s, blade: %s }"
++        % (start, end, mv, stam_dmg, cost, hit_stop, radius, str(left_hand).lower(), blade_literal(blade))
++    )
++
++
++def air_hits(src, weapon, anim_id, paired=False):
++    """Every damaging airborne contact, retaining its authored hand and order."""
++    anim = src.anim(weapon["file"], anim_id)
++    if anim is None or src.hkx_name(weapon["file"], anim_id) is None:
++        return []
++    hits = []
++    for start, end, judge in hit_events(anim):
++        got = src.judge(weapon["variation"], judge)
++        if not got or got[1] <= 0.0:
++            continue
++        left = left_handed("Paired" if paired else "", judge, got[5])
++        blade = src.blade(weapon["file"], anim_id, start, end, left, weapon["blade"])
++        hits.append((start, end, got[0], got[4], blade, hit_literal(start, end, got, left, blade)))
++    return hits
++
++
+ def swap_def(src, start, end):
+     """Rust `SwapDef { .. }` literal for one grip or weapon change."""
+     start_anim, end_anim = src.anim("a00", start), src.anim("a00", end)
+@@ -538,7 +576,7 @@ def gather(src):
+         weapons.append(info)
+ 
+     attacks = []  # (weapon index, two_hand, kind, literal, file, anim id)
+-    air = []  # (weapon index, two_hand, heavy, from, to, cost, radius, blade, file, anim id)
++    air = []  # (weapon index, two_hand, heavy, from, to, cost, radius, blade, all hits, file, anim id)
+     for index, weapon in enumerate(weapons):
+         for two_hand in (False, True):
+             offset = TWO_HAND_OFFSET if two_hand else 0
+@@ -559,26 +597,17 @@ def gather(src):
+                 attacks.append((index, two_hand, kind, literal, weapon["file"], anim_id))
+             for heavy, base_id in ((False, AIR_LIGHT), (True, AIR_HEAVY)):
+                 anim_id = base_id + offset
+-                anim = src.anim(weapon["file"], anim_id)
+-                if anim is None or src.hkx_name(weapon["file"], anim_id) is None or not hit_events(anim):
+-                    continue
+-                start, end, judge = hit_events(anim)[0]
+-                got = src.judge(weapon["variation"], judge)
+-                if not got:
+-                    continue
+-                cost, radius, left_hand = got[0], got[4], got[5]
+-                blade = src.blade(weapon["file"], anim_id, start, end, left_hand, weapon["blade"])
+-                air.append((index, two_hand, heavy, start, end, cost, radius, blade, weapon["file"], anim_id))
+-        # The paired jump attack: its first damaging hit.
+-        anim = src.anim(weapon["file"], AIR_PAIRED)
+-        if anim is not None and src.hkx_name(weapon["file"], AIR_PAIRED) is not None:
+-            for start, end, judge in hit_events(anim):
+-                got = src.judge(weapon["variation"], judge)
+-                if not got or got[1] <= 0.0:
++                hits = air_hits(src, weapon, anim_id)
++                if not hits:
+                     continue
+-                blade = src.blade(weapon["file"], AIR_PAIRED, start, end, left_handed("Paired", judge, got[5]), weapon["blade"])
+-                air.append((index, False, "paired", start, end, got[0], got[4], blade, weapon["file"], AIR_PAIRED))
+-                break
++                start, end, cost, radius, blade, _literal = hits[0]
++                air.append((index, two_hand, heavy, start, end, cost, radius, blade,
++                            [hit[-1] for hit in hits], weapon["file"], anim_id))
++        hits = air_hits(src, weapon, AIR_PAIRED, paired=True)
++        if hits:
++            start, end, cost, radius, blade, _literal = hits[0]
++            air.append((index, False, "paired", start, end, cost, radius, blade,
++                        [hit[-1] for hit in hits], weapon["file"], AIR_PAIRED))
+     return weapons, attacks, air
+ 
+ 
+@@ -656,18 +685,13 @@ def main():
+         "    Some(match (weapon, two_hand, heavy) {",
+     ]
+     air_literal = (
+-        'AirAttackDef { from: %.1f, to: %.1f, stamina: %.1f, source: "%s", radius: %.2f, blade: %s }'
++        'AirAttackDef { from: %.1f, to: %.1f, stamina: %.1f, source: "%s", radius: %.2f, blade: %s, hits: &[%s] }'
+     )
+-    for index, two_hand, heavy, start, end, cost, radius, blade, file, anim_id in air:
++    for index, two_hand, heavy, start, end, cost, radius, blade, hits, file, anim_id in air:
+         if heavy == "paired":
+             continue
+-        out.append(
+-            '        (%d, %s, %s) => AirAttackDef { from: %.1f, to: %.1f, stamina: %.1f, source: "%s", radius: %.2f, blade: %s },'
+-            % (
+-                index, str(two_hand).lower(), str(heavy).lower(), start, end, cost, clip_name(file, anim_id), radius,
+-                blade_literal(blade),
+-            )
+-        )
++        literal = air_literal % (start, end, cost, clip_name(file, anim_id), radius, blade_literal(blade), ", ".join(hits))
++        out.append('        (%d, %s, %s) => %s,' % (index, str(two_hand).lower(), str(heavy).lower(), literal))
+     out += ["        _ => return None,", "    })", "}", ""]
+ 
+     out += [
+@@ -676,9 +700,9 @@ def main():
+         "pub fn air_paired(weapon: usize) -> Option<AirAttackDef> {",
+         "    Some(match weapon {",
+     ]
+-    for index, _two_hand, heavy, start, end, cost, radius, blade, file, anim_id in air:
++    for index, _two_hand, heavy, start, end, cost, radius, blade, hits, file, anim_id in air:
+         if heavy == "paired":
+-            literal = air_literal % (start, end, cost, clip_name(file, anim_id), radius, blade_literal(blade))
++            literal = air_literal % (start, end, cost, clip_name(file, anim_id), radius, blade_literal(blade), ", ".join(hits))
+             out.append("        %d => %s," % (index, literal))
+     out += ["        _ => return None,", "    })", "}", ""]
+ 
+diff --git a/tools/tae.py b/tools/tae.py
+index b1dd8b8..3b1128b 100644
+--- a/tools/tae.py
++++ b/tools/tae.py
+@@ -18,7 +18,7 @@ class Event:
+ class Anim:
+     id: int
+     events: list = field(default_factory=list)
+-    # Another animation in the same file this one takes its events from, if any.
++    # Full category * 1000000 + animation id whose events/HKX this imports.
+     import_from: int | None = None
+     # Full id (category * 1000000 + id) of the animation whose HKX this one plays, if not its own.
+     hkx_from: int | None = None
+@@ -39,7 +39,8 @@ def parse(data: bytes) -> dict[int, Anim]:
+         anim = Anim(anim_id)
+         kind, body = struct.unpack_from("<qq", data, file_off)
+         if kind == 1:
+-            ref, = struct.unpack_from("<i", data, body)
++            # The first eight bytes are a file offset, not an animation id.
++            ref, = struct.unpack_from("<i", data, body + 8)
+             anim.import_from = ref
+         else:
+             # Full id of the animation whose HKX this one plays: category * 1000000 + id.
 diff --git a/tools/test_bake_anims.py b/tools/test_bake_anims.py
 new file mode 100644
 index 0000000..122c02d
@@ -402,18 +619,20 @@ index 0000000..122c02d
 +    unittest.main()
 diff --git a/tools/test_extract.py b/tools/test_extract.py
 new file mode 100644
-index 0000000..1a58170
+index 0000000..029b8ea
 --- /dev/null
 +++ b/tools/test_extract.py
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,88 @@
 +"""Small regression fixtures for the generator's attack-event selection."""
 +import os
 +from pathlib import Path
 +import struct
 +import tempfile
++from types import SimpleNamespace
 +import unittest
 +
 +from tae import Anim, Event
++import tae
 +
 +# Importing the extractor validates ER_FILES. These fixtures require no game
 +# data: its Source is never created and only pure event selection is exercised.
@@ -433,6 +652,51 @@ index 0000000..1a58170
 +
 +
 +class HitEventTests(unittest.TestCase):
++    def test_import_id_follows_offset_in_tae_body(self):
++        data = bytearray(256)
++        data[:4] = b"TAE "
++        data[7] = 0xff
++        struct.pack_into("<i", data, 0x54, 1)
++        struct.pack_into("<q", data, 0x58, 96)
++        struct.pack_into("<qq", data, 96, 34000, 112)
++        struct.pack_into("<qqqqi", data, 112, 0, 0, 0, 160, 0)
++        struct.pack_into("<qq", data, 160, 1, 176)
++        struct.pack_into("<qi", data, 176, 224, 25034000)
++        self.assertEqual(tae.parse(data)[34000].import_from, 25034000)
++
++    def test_cross_category_imports_and_cycles(self):
++        source = extract.Source.__new__(extract.Source)
++        source.tae = {"a40": {34000: Anim(34000, import_from=25034000)},
++                      "a25": {34000: Anim(34000, [hit(.6, .7, 800)])}}
++        source.hkx = {"a025_034000": b"fixture"}
++        self.assertIs(source.anim("a40", 34000), source.tae["a25"][34000])
++        self.assertEqual(source.hkx_name("a40", 34000), "a025_034000")
++        source.tae["a25"][34000].import_from = 40034000
++        source.hkx.clear()
++        self.assertIsNone(source.anim("a40", 34000))
++        self.assertIsNone(source.hkx_name("a40", 34000))
++
++        source.tae["a40"][34000].import_from = 34000
++        source.tae["a00"] = {34000: Anim(34000)}
++        source.hkx["a000_034000"] = b"base fixture"
++        self.assertIs(source.anim("a40", 34000), source.tae["a00"][34000])
++        self.assertEqual(source.hkx_name("a40", 34000), "a000_034000")
++
++    def test_paired_hand_assignment_is_not_hit_parity(self):
++        self.assertEqual([extract.left_handed("PairedLight1", judge, False) for judge in (805, 806, 800)],
++                         [True, True, False])
++        self.assertIn("left_hand: true", extract.hit_literal(10, 13, (4, 1, 1, .08, .1, False), True, []))
++
++    def test_airborne_sequence_keeps_all_damaging_hands(self):
++        animation = Anim(34530, [hit(.2, .3, 895), hit(.3, .4, 890), hit(.5, .6, 891), hit(.1, .2, 999)])
++        source = SimpleNamespace(anim=lambda *_: animation, hkx_name=lambda *_: "fixture",
++                                 judge=lambda _variation, judge: (4, 0 if judge == 999 else 1, 1, .08, .1, False),
++                                 blade=lambda *_: [])
++        weapon = {"file": "a23", "variation": 1, "blade": ()}
++        hits = extract.air_hits(source, weapon, 34530, paired=True)
++        self.assertEqual([(hit[0], hit[1]) for hit in hits], [(6., 9.), (9., 12.), (15., 18.)])
++        self.assertEqual(["left_hand: true" in hit[-1] for hit in hits], [True, False, False])
++
 +    def test_conditional_alternative_does_not_duplicate_real_hit(self):
 +        animation = Anim(30000, [hit(.6, .7, 0), hit(.6, .7, 5000, condition=187)])
 +        self.assertEqual(extract.hit_events(animation), [(18., 21., 0)])

@@ -329,6 +329,16 @@
             </widget>
            </item>
            <item>
+            <widget class="QCheckBox" name="disableParalysisCheckBox">
+             <property name="toolTip">
+              <string>Set the duration of every paralysis effect to zero for the player, NPCs and creatures. Works with Elden combat enabled or disabled.</string>
+             </property>
+             <property name="text">
+              <string>Disable paralysis</string>
+             </property>
+            </widget>
+           </item>
+           <item>
             <widget class="QGroupBox" name="eldenCombatAiGroupBox">
              <property name="toolTip">
               <string>Applies to characters using Elden combat. Requires Elden combat to be enabled.</string>

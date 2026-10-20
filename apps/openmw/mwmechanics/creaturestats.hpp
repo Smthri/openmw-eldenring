@@ -18,6 +18,8 @@
 #include <components/esm/refid.hpp>
 #include <components/esm3/magiceffects.hpp>
 #include <components/eldencombat/combat.hpp>
+#include <components/eldencombat/bossarts.hpp>
+#include <components/eldencombat/grip.hpp>
 
 namespace ESM
 {
@@ -64,6 +66,8 @@ namespace MWMechanics
         // but never resume a dodge or a buffered attack in the middle of an animation.
         EldenCombat::Controller mEldenCombat;
         EldenCombat::Input mEldenCombatInput;
+        EldenCombat::BossArtState mEldenBossArt;
+        EldenCombat::GripTransition mEldenGripTransition;
         bool mEldenCombatActive = false;
         unsigned int mMovementFlags = 0;
 
@@ -111,6 +115,9 @@ namespace MWMechanics
         const EldenCombat::Controller& getEldenCombat() const { return mEldenCombat; }
         EldenCombat::Input& getEldenCombatInput() { return mEldenCombatInput; }
         const EldenCombat::Input& getEldenCombatInput() const { return mEldenCombatInput; }
+        EldenCombat::BossArtState& getEldenBossArt() { return mEldenBossArt; }
+        EldenCombat::GripTransition& getEldenGripTransition() { return mEldenGripTransition; }
+        const EldenCombat::GripTransition& getEldenGripTransition() const { return mEldenGripTransition; }
         bool isEldenCombatActive() const { return mEldenCombatActive; }
         void setEldenCombatActive(bool active) { mEldenCombatActive = active; }
 

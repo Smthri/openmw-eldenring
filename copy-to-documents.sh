@@ -6,12 +6,29 @@ _elden_source="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 _elden_destination=''
 _elden_dry_run=false
 _elden_destination_set=false
+_elden_animation=''
+_elden_music=''
+_elden_sounds=''
 
-for _elden_arg in "$@"; do
+while (($#)); do
+    _elden_arg="$1"
+    shift
     case "$_elden_arg" in
         --dry-run) _elden_dry_run=true ;;
+        --animations-source|--music-source|--sounds-source)
+            if (($# == 0)) || [[ -z "$1" || "$1" == --* ]]; then
+                echo "$_elden_arg requires a source path." >&2
+                exit 1
+            fi
+            case "$_elden_arg" in
+                --animations-source) _elden_animation="$1" ;;
+                --music-source) _elden_music="$1" ;;
+                --sounds-source) _elden_sounds="$1" ;;
+            esac
+            shift
+            ;;
         -h|--help)
-            echo 'Usage: ./copy-to-documents.sh destination-directory [--dry-run]'
+            echo 'Usage: ./copy-to-documents.sh destination-directory [--dry-run] [--animations-source bank] [--music-source directory] [--sounds-source directory]'
             echo 'Example: ./copy-to-documents.sh /mnt/c/Users/YourName/Documents/openmw'
             echo 'Copies sources, generated timings, animations, music and combat sounds; preserves existing builds/profiles/saves.'
             exit 0
@@ -49,6 +66,8 @@ esac
 
 for _elden_required in CMakeLists.txt apps/openmw/CMakeLists.txt components/CMakeLists.txt \
     extern/sol3/sol/sol.hpp extern/oics/CMakeLists.txt components/eldencombat/imported_timings.hpp \
+    components/eldencombat/bossarts.hpp components/eldencombat/guard.hpp components/eldencombat/nativeattack.hpp \
+    components/eldencombat/creatureposes.hpp components/eldencombat/grip.hpp \
     CI/eldenring-build-windows.ps1 CI/eldenring-audit-animations.py \
     scripts/install_eldenring_animations.py scripts/verify_eldenring_copy.py; do
     if [[ ! -f "$_elden_source/$_elden_required" ]]; then
@@ -56,38 +75,41 @@ for _elden_required in CMakeLists.txt apps/openmw/CMakeLists.txt components/CMak
         exit 1
     fi
 done
-_elden_animation="$_elden_source/local-assets/player_anims.bin"
-if [[ ! -f "$_elden_animation" ]]; then
-    _elden_animation="$_elden_source/../ELDEN-RING-Combat-Rewrite/assets/player_anims.bin"
+if [[ -z "$_elden_animation" ]]; then
+    _elden_animation="$_elden_source/local-assets/player_anims.bin"
+    if [[ ! -f "$_elden_animation" ]]; then
+        _elden_animation="$_elden_source/../ELDEN-RING-Combat-Rewrite/assets/player_anims.bin"
+    fi
 fi
 if [[ ! -f "$_elden_animation" ]]; then
-    echo 'Missing player_anims.bin: place your baked bank in openmw/local-assets/ before copying.' >&2
+    echo 'Missing player_anims.bin: place your baked bank in local-assets/ under this checkout or pass --animations-source.' >&2
     exit 1
 fi
-# Validate the complete clip inventory, including seal gestures and dart throws,
+# Validate paired hit hands/timings as well as the complete animation inventory,
 # before copying sources or replacing a usable destination bank.
 if ! python3 "$_elden_source/scripts/install_eldenring_animations.py" --source "$_elden_animation" \
-    --timings-header "$_elden_source/components/eldencombat/imported_timings.hpp" --check-only; then
+    --timings-header "$_elden_source/components/eldencombat/imported_timings.hpp" --require-paired --check-only; then
     echo "Animation validation failed for: $_elden_animation; no source files were copied." >&2
-    echo 'Rebake with the updated animation importer and replace local-assets/player_anims.bin with the complete bank.' >&2
-    echo 'If the neighboring ELDEN-RING-Combat-Rewrite/assets/player_anims.bin is already current, rename the stale local-assets/player_anims.bin so that bank is selected.' >&2
+    echo 'Regenerate timings with the updated neighboring extractor and scripts/import_eldenring_timings.py; rebake only if clips are missing.' >&2
+    echo 'Select the complete neighboring ELDEN-RING-Combat-Rewrite/assets/player_anims.bin with --animations-source if local-assets/player_anims.bin is stale.' >&2
     exit 1
 fi
 _elden_timing_hash="$(sha256sum < "$_elden_source/components/eldencombat/imported_timings.hpp")"
 _elden_animation_hash="$(sha256sum < "$_elden_animation")"
-_elden_music="$_elden_source/local-assets/music/eldenring"
-if [[ ! -f "$_elden_music/manifest.json" ]]; then
-    _elden_music="$_elden_source/build-eldenring-assets/music/eldenring"
+if [[ -z "$_elden_music" ]]; then
+    for _elden_candidate in "$_elden_source/local-assets/music/eldenring" "$_elden_source/build-eldenring-assets/music/eldenring"; do
+        if [[ -f "$_elden_candidate/manifest.json" ]]; then _elden_music="$_elden_candidate"; break; fi
+    done
 fi
-if [[ -f "$_elden_music/manifest.json" ]]; then
+if [[ -n "$_elden_music" ]]; then
     python3 "$_elden_source/scripts/install_eldenring_music.py" --source "$_elden_music" --check-only
-else
-    _elden_music=''
 fi
 # Prefer the complete block/counter library over an older staged dodge-only copy.
-_elden_sounds="$(python3 "$_elden_source/scripts/install_eldenring_sounds.py" --select-source \
-    "$_elden_source/local-assets/sound/eldenring/dodge" \
-    "$_elden_source/build-eldenring-assets/sound/eldenring/dodge")"
+if [[ -z "$_elden_sounds" ]]; then
+    _elden_sounds="$(python3 "$_elden_source/scripts/install_eldenring_sounds.py" --select-source \
+        "$_elden_source/local-assets/sound/eldenring/dodge" \
+        "$_elden_source/build-eldenring-assets/sound/eldenring/dodge")"
+fi
 if [[ -n "$_elden_sounds" ]]; then
     python3 "$_elden_source/scripts/install_eldenring_sounds.py" --source "$_elden_sounds" --check-only
 else
