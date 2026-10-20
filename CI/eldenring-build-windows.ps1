@@ -33,6 +33,7 @@ param(
     [switch]$WithLauncher = $true,
     [switch]$WithoutLauncher,
     [switch]$PortableSaves,
+    [switch]$ShareableRelease,
     [string]$QtRoot = '',
     [string]$TimingsSource = '',
     [string]$AnimationsSource = '',
@@ -63,6 +64,22 @@ if (-not $InstallDirectory) { $InstallDirectory = Join-Path $sourceRoot 'build-e
 $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
 $DependencyDirectory = [IO.Path]::GetFullPath($DependencyDirectory)
 $InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory)
+if ($ShareableRelease) {
+    if ($Configuration -ne 'Release') { throw 'Shareable releases require -Configuration Release.' }
+    if ($TimingsSource -or $AnimationsSource -or $MusicSource -or $SoundsSource -or $PortableSaves) {
+        throw 'Shareable releases cannot include extracted data or a personal profile.'
+    }
+    foreach ($relative in @('components\eldencombat\imported_timings.hpp',
+                            'files\data-mw\scripts\omw\music\eldenring_cells.lua')) {
+        if (Test-Path -LiteralPath (Join-Path $sourceRoot $relative)) {
+            throw "Use a clean source snapshot without generated game data: $relative"
+        }
+    }
+    if ((Test-Path -LiteralPath $InstallDirectory) -and
+        @(Get-ChildItem -LiteralPath $InstallDirectory -Force).Count) {
+        throw 'Use an empty -InstallDirectory for a shareable release; existing installations are preserved.'
+    }
+}
 
 function Invoke-Checked {
     param([string]$Program, [string[]]$Arguments)
@@ -173,7 +190,7 @@ foreach ($testScript in @('eldenring-test-profile.py', 'eldenring-test-animation
     Invoke-Checked $python ($pythonArguments + @((Join-Path $PSScriptRoot $testScript)))
 }
 Invoke-Checked $python ($pythonArguments + @((Join-Path $PSScriptRoot 'eldenring-test-qt-translations.py'), '--cmake', $cmake))
-if (-not (Test-Path -LiteralPath (Join-Path $MorrowindDirectory 'Data Files\Morrowind.esm'))) {
+if (-not $ShareableRelease -and -not (Test-Path -LiteralPath (Join-Path $MorrowindDirectory 'Data Files\Morrowind.esm'))) {
     throw "Morrowind data was not found in $MorrowindDirectory. Supply -MorrowindDirectory with its installation directory."
 }
 Write-Host "Using Visual Studio ${VisualStudioVersion}: $visualStudio"
@@ -256,7 +273,7 @@ $installedDependencies = Join-Path $dependencyRoot 'installed\x64-windows'
 if ($TimingsSource -and -not (Test-Path -LiteralPath $TimingsSource -PathType Leaf)) {
     throw "The supplied timing source does not exist: $TimingsSource"
 }
-if (-not $TimingsSource) {
+if (-not $ShareableRelease -and -not $TimingsSource) {
     $defaultTimings = Join-Path (Split-Path -Parent $sourceRoot) 'ELDEN-RING-Combat-Rewrite\src\sim\extracted.rs'
     if (Test-Path -LiteralPath $defaultTimings -PathType Leaf) { $TimingsSource = $defaultTimings }
 }
@@ -268,7 +285,7 @@ $animationInstaller = Join-Path $sourceRoot 'scripts\install_eldenring_animation
 if ($AnimationsSource -and -not (Test-Path -LiteralPath $AnimationsSource -PathType Leaf)) {
     throw "The supplied animation bank does not exist: $AnimationsSource"
 }
-if (-not $AnimationsSource) {
+if (-not $ShareableRelease -and -not $AnimationsSource) {
     foreach ($candidate in @(
         (Join-Path $sourceRoot 'local-assets\player_anims.bin'),
         (Join-Path (Split-Path -Parent $sourceRoot) 'ELDEN-RING-Combat-Rewrite\assets\player_anims.bin'),
@@ -282,14 +299,14 @@ if ($AnimationsSource) {
     $animationJson = Invoke-Checked $python ($pythonArguments + @($animationInstaller, '--source', $AnimationsSource, '--check-only', '--json'))
     $animationValidation = ($animationJson -join "`n") | ConvertFrom-Json
     $animationHash = $animationValidation.sha256
-} else {
+} elseif (-not $ShareableRelease) {
     Write-Warning 'No player_anims.bin was found. The package will use native Morrowind animations. Supply -AnimationsSource with your locally baked bank, or place it in local-assets\player_anims.bin or the sibling ELDEN-RING-Combat-Rewrite\assets directory.'
 }
 
 if ($MusicSource -and -not (Test-Path -LiteralPath $MusicSource -PathType Container)) {
     throw "The supplied music source does not exist: $MusicSource"
 }
-if (-not $MusicSource) {
+if (-not $ShareableRelease -and -not $MusicSource) {
     foreach ($candidate in @(
         (Join-Path $sourceRoot 'local-assets\music\eldenring'),
         (Join-Path $sourceRoot 'build-eldenring-assets\music\eldenring'),
@@ -307,7 +324,7 @@ if ($MusicSource) {
     $musicJson = Invoke-Checked $python ($pythonArguments + @($musicInstaller, '--source', $MusicSource, '--check-only', '--json'))
     $musicValidation = ($musicJson -join "`n") | ConvertFrom-Json
     $musicHash = $musicValidation.manifest_sha256
-} else {
+} elseif (-not $ShareableRelease) {
     Write-Host 'No imported regional music found. Import it with scripts\import_eldenring_music.py or supply -MusicSource. The music toggle will fall back to Morrowind music until tracks are installed.'
 }
 
@@ -315,7 +332,7 @@ if ($SoundsSource -and -not (Test-Path -LiteralPath $SoundsSource -PathType Cont
     throw "The supplied sound source does not exist: $SoundsSource"
 }
 $soundInstaller = Join-Path $sourceRoot 'scripts\install_eldenring_sounds.py'
-if (-not $SoundsSource) {
+if (-not $ShareableRelease -and -not $SoundsSource) {
     $soundCandidates = @(
         (Join-Path $sourceRoot 'local-assets\sound\eldenring\dodge'),
         (Join-Path $sourceRoot 'build-eldenring-assets\sound\eldenring\dodge'),
@@ -334,7 +351,7 @@ if ($SoundsSource) {
     if ('guard-counter.ogg' -notin @($soundValidation.sounds.file)) {
         Write-Warning 'The sound library contains only dodge cues. Re-import with scripts\import_eldenring_sounds.py and recopy assets to add block and guard-counter sounds.'
     }
-} else {
+} elseif (-not $ShareableRelease) {
     Write-Warning 'No imported combat sounds found. Recopy the WSL source/assets with the updated copy-to-documents.sh or CI\eldenring-copy-to-documents.ps1, or supply -SoundsSource. Rolls, backsteps and guard counters will have no imported sound until the recordings are installed; blocks use the native impact fallback.'
 }
 
@@ -424,6 +441,8 @@ $configureArguments = @(
     '-D', 'OPENMW_USE_SYSTEM_YAML_CPP=OFF', '-D', 'OPENMW_DEPLOY_RUNTIME_DEPENDENCIES=ON',
     '-D', 'OPENMW_LTO_BUILD=OFF', '-D', "DEPLOY_QT_TRANSLATIONS=$qtEnabled"
 )
+$compiledTimings = if ($ShareableRelease) { 'OFF' } else { 'ON' }
+$configureArguments += @('-D', "OPENMW_ELDENCOMBAT_COMPILED_TIMINGS=$compiledTimings")
 if ($buildLauncher) {
     # A previous configure may still cache the old SDK even after the prefix
     # changes (for example when recovering a failed install in a Unicode path).
@@ -547,6 +566,12 @@ foreach ($relative in $packageRequired) {
 Push-Location $InstallDirectory
 # Parse a real package path as well as --version to catch Unicode argument failures.
 try { Invoke-Checked $executable @('--version', '--config', (Join-Path $InstallDirectory 'elden-profile')) } finally { Pop-Location }
+
+if ($ShareableRelease) {
+    Write-Host "Clean Windows x64 Release runtime: $InstallDirectory"
+    Write-Host 'Run scripts/package_eldenring_release.py to add setup, extraction tools, licenses and create the shareable ZIP.'
+    return
+}
 
 # Use a separate profile so existing OpenMW key bindings do not override the
 # Elden defaults, and configure the supplied installation without a wizard.

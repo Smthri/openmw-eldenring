@@ -28,6 +28,7 @@ import json
 import math
 from pathlib import Path
 import re
+import struct
 import sys
 import unittest
 
@@ -61,6 +62,21 @@ TIMING_FIELDS = {
     "cancel_jump": "mCancelJump", "cancel_guard": "mCancelGuard", "cancel_move": "mCancelMove",
     "cancel_left": "mCancelLeft",
 }
+# ERAT version 1 identifiers follow combat.hpp. Existing ordinals must not be
+# reordered without a format version change; no generated game data lives here.
+RUNTIME_ACTIONS = (
+    "Idle Light1 Light2 Light3 Light4 Light5 Light6 Heavy1Charge Heavy1 Heavy2Charge Heavy2 "
+    "RunLight RunHeavy RollAttack BackstepAttack CrouchAttack JumpLight JumpHeavy GuardCounter "
+    "LeftLight1 LeftLight2 LeftLight3 LeftLight4 LeftLight5 LeftLight6 "
+    "PairedLight1 PairedLight2 PairedLight3 PairedLight4 PairedLight5 PairedLight6 "
+    "PairedRun PairedRoll PairedBackstep PairedJump SpearThrust GuardThrust Roll CrouchRoll "
+    "Backstep Jump GuardHit Deflected GuardBreak HurtSmall HurtMiddle HurtLarge Knockdown "
+    "StanceBreak Critical Dead"
+).split()
+RUNTIME_WEAPONS = list(WEAPON_CLASSES.values())
+RUNTIME_LOADS = ["Light", "Medium", "Heavy"]
+RUNTIME_FIELDS = list(TIMING_FIELDS.values()) + [
+    "mInvincibleFrom", "mInvincibleTo", "mChargeFrom", "mChargeTo", "mStartCost", "mDistance", "mStrength"]
 MAX_HITS = 32  # Rust's per-hit masks and EldenCombat::MaximumHits both have 32 slots.
 TOKEN = re.compile(r'\s*(?:("(?:[^"\\]|\\.)*")|(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)'
                    r'|([A-Za-z_][A-Za-z_0-9]*)|([{}\[\](),:&]))')
@@ -523,6 +539,40 @@ def generate_header(definitions: list[Definition]) -> str:
     return "\n".join(lines)
 
 
+def generate_runtime(definitions: list[Definition]) -> bytes:
+    """Serialize local data without requiring it to be compiled into an engine."""
+    result = bytearray(struct.pack("<4sII", b"ERAT", 1, len(definitions)))
+
+    def append_definition(definition: Definition):
+        result.extend(definition.animation.encode("ascii"))
+        values = [definition.values.get(field, 0.5 if field == "mStrength" else 0.)
+                  for field in RUNTIME_FIELDS]
+        result.extend(struct.pack("<17fI", *values, len(definition.hits)))
+        for hit in definition.hits:
+            result.extend(struct.pack("<7f??", *hit))
+        if len(definition.root_motion) > 32768:
+            raise ImportError("runtime action has too many root-motion samples")
+        result.extend(struct.pack("<I", len(definition.root_motion)))
+        for sample in definition.root_motion:
+            result.extend(struct.pack("<3f", *sample))
+        phases = int(definition.landing is not None) | (int(definition.landing_short is not None) << 1)
+        result.extend(struct.pack("<B", phases))
+        for landing in (definition.landing, definition.landing_short):
+            if landing is not None:
+                append_definition(landing)
+
+    for definition in definitions:
+        result.extend(struct.pack("<6i", RUNTIME_ACTIONS.index(definition.action),
+                                  RUNTIME_WEAPONS.index(definition.weapon) if definition.weapon else -1,
+                                  int(definition.two_hand) if definition.two_hand is not None else -1,
+                                  RUNTIME_LOADS.index(definition.load) if definition.load else -1,
+                                  *(definition.stance or (-1, -1))))
+        append_definition(definition)
+    if not 0 < len(definitions) <= 8192 or len(result) > 64 * 1024 * 1024:
+        raise ImportError("runtime timing table exceeds supported limits")
+    return bytes(result)
+
+
 def fixture_literal(hits: int = 0) -> str:
     hit = ("Hit { from: 11.0, to: 13.0, mv: 1.2, guard_damage: 1.5, stamina: 12.0, stop: 0.08, radius: 0.1, "
            "blade: &[[0.1, 1.0, 0.3, 0.2, 1.4, 0.8], [-0.1, 0.9, 0.4, 0.15, 1.2, 0.7]] }")
@@ -590,6 +640,21 @@ class FixtureTests(unittest.TestCase):
         self.assertIn('result.mAnimation = "a000_000000";', header)
         self.assertIn("result.mAnimationSpeed = speed;", header)
         self.assertIn("WeaponClass::StraightSword: return twoHanded ? 11u : 10u;", header)
+
+    def test_runtime_schema_and_determinism(self):
+        definitions = parse_source(self.source_with_short_landings())
+        data = generate_runtime(definitions)
+        self.assertEqual(struct.unpack_from("<4sII", data), (b"ERAT", 1, len(definitions)))
+        self.assertEqual(data, generate_runtime(parse_source(self.source_with_short_landings())))
+        combat_header = Path(__file__).resolve().parents[1] / "components/eldencombat/combat.hpp"
+        # Packaged importers need no source checkout; this parity check belongs
+        # to source validation, where combat.hpp is present.
+        if combat_header.is_file():
+            source = combat_header.read_text(encoding="utf-8")
+            for enum, names in (("Action", RUNTIME_ACTIONS), ("WeaponClass", RUNTIME_WEAPONS),
+                                ("Load", RUNTIME_LOADS)):
+                body = re.search(rf"enum class {enum}\s*\{{(.*?)\}};", source, re.S).group(1)
+                self.assertEqual(re.findall(r"\b(\w+)\s*,", body), names)
 
     def test_animation_metadata_is_validated(self):
         for source in (self.source().replace('source: "a00_000000"', 'source: "bad"'),
@@ -761,24 +826,36 @@ def main() -> int:
     parser.add_argument("--output", type=Path,
                         default=Path(__file__).resolve().parents[1] / "components/eldencombat/imported_timings.hpp")
     parser.add_argument("--self-test", action="store_true", help="run safe literal parsing and conversion fixtures")
+    parser.add_argument("--runtime-output", type=Path, help="write local ERAT runtime timing data at this path")
+    parser.add_argument("--runtime-only", action="store_true", help="do not create a generated C++ header")
     arguments = parser.parse_args()
     if arguments.self_test:
         return 0 if unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(FixtureTests)).wasSuccessful() else 1
     if arguments.source is None:
         parser.error("source is required: run tools/extract.py against your local Elden Ring files first")
+    if arguments.runtime_only and arguments.runtime_output is None:
+        parser.error("--runtime-only requires --runtime-output")
     try:
         diagnostics = []
         definitions = parse_source(arguments.source.read_text(encoding="utf-8"), diagnostics)
-        header = generate_header(definitions)
-        arguments.output.parent.mkdir(parents=True, exist_ok=True)
-        arguments.output.write_text(header, encoding="utf-8")
+        if not arguments.runtime_only:
+            header = generate_header(definitions)
+            arguments.output.parent.mkdir(parents=True, exist_ok=True)
+            arguments.output.write_text(header, encoding="utf-8")
+        if arguments.runtime_output is not None:
+            data = generate_runtime(definitions)
+            arguments.runtime_output.parent.mkdir(parents=True, exist_ok=True)
+            arguments.runtime_output.write_bytes(data)
     except (OSError, ImportError) as error:
         print(f"Cannot import Elden Ring timings: {error}", file=sys.stderr)
         return 1
-    print(f"Imported {len(definitions)} actions to {arguments.output}. Keep this generated file local.")
+    for output in ([arguments.output] if not arguments.runtime_only else []) + (
+            [arguments.runtime_output] if arguments.runtime_output is not None else []):
+        print(f"Imported {len(definitions)} actions to {output}. Keep this generated file local.")
     for diagnostic in diagnostics:
         print(diagnostic, file=sys.stderr)
-    print("Configure OpenMW again to enable the imported action table.")
+    if not arguments.runtime_only and arguments.runtime_output is None:
+        print("Configure OpenMW again to enable the compiled imported action table.")
     return 0
 
 

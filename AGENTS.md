@@ -65,11 +65,19 @@ ground recovery and paralysis work is retained as a separate prerequisite commit
 LMB/RB remains right-hand light; RMB/LB uses matching paired chains. Current local
 bank: 1,556 clips, 1,085 actions including 175 paired; assets are unchanged.
 
-Evidence: `build-eldencombat/problems-20261020/validation-summary.json`.
-The checks distinguish standalone suites, shader rendering, CPU pose callbacks,
-production methods with service stubs, and native object compilation. Full engine
-linking and live gameplay checks of this follow-up remain pending. No installed
-Windows package/profile/save update was requested or performed.
+Map/armament evidence: `build-eldencombat/problems-20261020/validation-summary.json`.
+Those checks distinguish standalone suites, shader rendering, CPU pose callbacks,
+production methods with service stubs, and native object compilation.
+
+The Windows shareable release uses `OPENMW_ELDENCOMBAT_COMPILED_TIMINGS=OFF`,
+ships no extracted data/profile, and imports action_timings.bin, animations and
+audio from the recipient's Elden Ring installation. Runtime timing parity is
+recorded in `build-eldencombat/runtime-timings-20261020/validation-summary.json`.
+Windows build, package audit and fresh setup/import/launch evidence belongs in
+`build-eldencombat/release-20261020/`; use the current handoff for final results.
+Fresh display defaults are 1280x720 windowed/GUI scale 1; preserve user overrides.
+Ordinary personalized build ZIPs remain local. Never publish them or confuse a
+clean executable with a redistributable build that embeds generated timing data.
 
 After substantive work replace current state/pending checks in the shared handoff;
 keep this file concise and do not append transcripts or superseded reports.

@@ -1,4 +1,5 @@
 #include "combat.hpp"
+#include "timingdata.hpp"
 
 #ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
 #include "imported_timings.hpp"
@@ -15,6 +16,44 @@ namespace EldenCombat
 {
     namespace
     {
+        std::optional<ActionDef> localActionDefinition(Action action, const Config& config, bool twoHanded)
+        {
+            if (const auto data = runtimeTimings())
+                return data->actionDefinition(action, config, twoHanded);
+#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
+            return importedActionDefinition(action, config, twoHanded);
+#else
+            return std::nullopt;
+#endif
+        }
+
+        bool localHasWeaponMoveset(WeaponClass weapon, bool twoHanded)
+        {
+            if (const auto data = runtimeTimings())
+                return data->hasWeaponMoveset(weapon, twoHanded);
+#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
+            return importedHasWeaponMoveset(weapon, twoHanded);
+#else
+            return false;
+#endif
+        }
+
+        bool localHasAction(Action action, const Config& config, bool twoHanded)
+        {
+            return localActionDefinition(action, config, twoHanded).has_value();
+        }
+
+        unsigned int localStanceCategory(WeaponClass weapon, bool twoHanded)
+        {
+            if (const auto data = runtimeTimings())
+                return data->stanceCategory(weapon, twoHanded);
+#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
+            return importedStanceCategory(weapon, twoHanded);
+#else
+            return 0;
+#endif
+        }
+
         constexpr float Never = 9999.f;
         constexpr float SprintHoldFrames = 10.f;
         constexpr float SprintGroundGraceSeconds = 0.12f;
@@ -86,21 +125,16 @@ namespace EldenCombat
 
         Action selectAttack(std::initializer_list<Action> choices, const Config& config, bool twoHanded)
         {
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
             const WeaponClass weapon = leftAction(*choices.begin()) ? config.mLeftWeaponClass : config.mWeaponClass;
-            if (importedHasWeaponMoveset(weapon, twoHanded))
+            if (localHasWeaponMoveset(weapon, twoHanded))
             {
                 // The source selects the first move this weapon actually has.
                 // A missing action in a known moveset must not invent a new attack.
                 for (const Action action : choices)
-                    if (importedHasAction(action, config, twoHanded))
+                    if (localHasAction(action, config, twoHanded))
                         return action;
                 return Action::Idle;
             }
-#else
-            (void)config;
-            (void)twoHanded;
-#endif
             return *choices.begin();
         }
 
@@ -351,13 +385,7 @@ namespace EldenCombat
 
     std::string stanceAnimation(WeaponClass weapon, bool twoHanded, unsigned int animationId)
     {
-        unsigned int category = 0;
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        category = importedStanceCategory(weapon, twoHanded);
-#else
-        (void)weapon;
-        (void)twoHanded;
-#endif
+        const unsigned int category = localStanceCategory(weapon, twoHanded);
         std::ostringstream name;
         name << 'a' << std::setfill('0') << std::setw(3) << category << '_' << std::setw(6) << animationId;
         return name.str();
@@ -411,15 +439,13 @@ namespace EldenCombat
                 = result.mCancelGuard = result.mCancelJump = result.mCancelDodge = result.mDuration;
             return result;
         }
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        if (std::optional<ActionDef> imported = importedActionDefinition(action, config, twoHanded))
+        if (std::optional<ActionDef> imported = localActionDefinition(action, config, twoHanded))
         {
             configureRollDistance(*imported, action, config);
             configureDodgeCost(*imported, action, config);
             configureNativeAttack(*imported, action, config);
             return std::move(*imported);
         }
-#endif
         ActionDef result;
         result.mDuration = 60.f;
         result.mInputFrom = 10.f;
@@ -766,18 +792,16 @@ namespace EldenCombat
             return selectAttack({ Action::BackstepAttack, Action::Light1 }, mConfig, mTwoHanded);
         if (lightOpener(mAction))
             return selectAttack({ Action::Light2, Action::Light1 }, mConfig, mTwoHanded);
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        if (importedActionDefinition(Action::Light1, mConfig, mTwoHanded))
+        if (localActionDefinition(Action::Light1, mConfig, mTwoHanded))
         {
             if (mAction >= Action::Light1 && mAction < Action::Light6)
             {
                 const Action next = static_cast<Action>(static_cast<int>(mAction) + 1);
-                if (importedActionDefinition(next, mConfig, mTwoHanded))
+                if (localActionDefinition(next, mConfig, mTwoHanded))
                     return next;
             }
             return Action::Light1;
         }
-#endif
         const int chain = profile(mConfig.mWeaponClass).mChain;
         if (mAction >= Action::Light1 && static_cast<int>(mAction) < static_cast<int>(Action::Light1) + chain - 1)
             return static_cast<Action>(static_cast<int>(mAction) + 1);
@@ -799,10 +823,8 @@ namespace EldenCombat
     {
         if (!mConfig.mPairedWeapons || twoHanded)
             return false;
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        if (importedHasWeaponMoveset(mConfig.mWeaponClass, false))
-            return importedHasAction(Action::PairedLight1, mConfig, false);
-#endif
+        if (localHasWeaponMoveset(mConfig.mWeaponClass, false))
+            return localHasAction(Action::PairedLight1, mConfig, false);
         return true;
     }
 
@@ -819,10 +841,8 @@ namespace EldenCombat
             if (mAction >= Action::PairedLight1 && mAction < Action::PairedLight6)
             {
                 const Action next = static_cast<Action>(static_cast<int>(mAction) + 1);
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-                if (importedActionDefinition(Action::PairedLight1, mConfig, mTwoHanded))
-                    return importedActionDefinition(next, mConfig, mTwoHanded) ? next : Action::PairedLight1;
-#endif
+                if (localActionDefinition(Action::PairedLight1, mConfig, mTwoHanded))
+                    return localActionDefinition(next, mConfig, mTwoHanded) ? next : Action::PairedLight1;
                 if (static_cast<int>(next) < static_cast<int>(Action::PairedLight1) + profile(mConfig.mWeaponClass).mChain)
                     return next;
             }
@@ -831,10 +851,8 @@ namespace EldenCombat
         if (mAction >= Action::LeftLight1 && mAction < Action::LeftLight6)
         {
             const Action next = static_cast<Action>(static_cast<int>(mAction) + 1);
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-            if (importedActionDefinition(Action::LeftLight1, mConfig, mTwoHanded))
-                return importedActionDefinition(next, mConfig, mTwoHanded) ? next : Action::LeftLight1;
-#endif
+            if (localActionDefinition(Action::LeftLight1, mConfig, mTwoHanded))
+                return localActionDefinition(next, mConfig, mTwoHanded) ? next : Action::LeftLight1;
             if (static_cast<int>(next) < static_cast<int>(Action::LeftLight1) + profile(mConfig.mLeftWeaponClass).mChain)
                 return next;
         }

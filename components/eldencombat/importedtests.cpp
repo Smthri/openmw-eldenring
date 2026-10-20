@@ -9,6 +9,7 @@
 #include "pairedtests.hpp"
 #include "animations.hpp"
 #include "imported_timings.hpp"
+#include "timingdata.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -221,6 +222,12 @@ int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 2)
+        {
+            std::ifstream stream(argv[2], std::ios::binary);
+            check(static_cast<bool>(stream), "cannot open local runtime timing file");
+            EldenCombat::setRuntimeTimings(std::make_shared<EldenCombat::TimingData>(stream));
+        }
         EldenCombat::Tests::controlledFlight();
         EldenCombat::Tests::enemyPoise();
         EldenCombat::Tests::configurableDodgeCost();

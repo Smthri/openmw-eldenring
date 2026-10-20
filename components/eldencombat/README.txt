@@ -1,7 +1,7 @@
 OpenMW EldenCombat component
 
 combat.cpp/combat.hpp adapt the public MIT-licensed state-machine design in
-ELDEN-RING-Combat-Rewrite/src/sim/{player,data,dummy}.rs into standalone C++17.
+ELDEN-RING-Combat-Rewrite/src/sim/{player,data,dummy}.rs into standalone C++20.
 Keep LICENSE-MIT.txt with distributions containing this component. OpenMW's
 overall GPL licensing continues to apply to the combined application.
 
@@ -12,7 +12,18 @@ is imported, this component provides documented fallback action timings and
 weapon profiles rather than claiming that its full action table, animation or
 weapon geometry matches Elden Ring. scripts/import_eldenring_timings.py imports
 the local generated table into imported_timings.hpp; CMake enables that table
-when the generated header exists.
+when the generated header exists and OPENMW_ELDENCOMBAT_COMPILED_TIMINGS is ON.
+Redistributable engine builds set this option OFF. They load local action data
+from resources/vfs/animations/eldencombat/action_timings.bin beside the bank.
+Generate it from the user's own extraction with:
+  python scripts/import_eldenring_timings.py path/to/extracted.rs --runtime-only --runtime-output path/to/package/resources/vfs/animations/eldencombat/action_timings.bin
+The runtime file is proprietary game-derived data too and must stay local.
+timingdata.hpp validates its version, identifiers, finite values, hit windows,
+record/sample limits and landing phases before installing the immutable table.
+Runtime data takes precedence over a compiled table. Missing or invalid data
+retains compiled timing data when available, otherwise authored fallback timing.
+Per-action weapon speed, root motion, contacts and landing clocks are identical
+to the local generated-header build. No game data is embedded in the reader.
 The importer also keeps each action's baked clip identifier and each weapon's
 one-/two-handed stance categories. animations.cpp reads the local ERAN bank
 from the recreation's tools/bake_anims.py, validates its layout and samples
@@ -231,14 +242,19 @@ into at most 1/60-second slices and caps one update at one second to avoid huge
 catch-up after pauses. Timers, costs and crossed-hit events use those slices.
 
 Standalone checks (no OpenMW dependencies):
-  c++ -std=c++17 -O2 -Wall -Wextra -Werror combat.cpp tests.cpp -o /tmp/eldencombat-tests
+  c++ -std=c++20 -O2 -Wall -Wextra -Werror combat.cpp tests.cpp -o /tmp/eldencombat-tests
   /tmp/eldencombat-tests
-  c++ -std=c++17 -O2 -Wall -Wextra -Werror animations.cpp animationtests.cpp -o /tmp/eldenanimation-tests
+  c++ -std=c++20 -O2 -Wall -Wextra -Werror animations.cpp animationtests.cpp -o /tmp/eldenanimation-tests
   /tmp/eldenanimation-tests [path/to/local/player_anims.bin]
 
 The CMake eldencombat-imported-tests executable also accepts a local animation
 bank path to check that every imported action and weapon idle/guard stance
 references a clip present in that bank.
+eldentimingdata-tests accepts a local action_timings.bin to check runtime action
+selection without a compiled table. eldentimingdata-imported-tests compares that
+file against every compiled action/weapon/grip/load/speed combination, including
+root samples, both landing phases, hand assignments, costs and damage metadata.
+Both suites reject malformed synthetic files and verify fallback restoration.
 
 Bow poses use bow.hpp to fit the imported longbow draw/held/release sequence
 to native shoot text keys. The helper distinguishes a continuous release

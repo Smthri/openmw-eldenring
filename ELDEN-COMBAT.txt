@@ -944,22 +944,32 @@ has valid authored placement/travel coordinates; the original burial trigger
 has not been reproduced. Native unstuck handling alone skipped idle actors and
 could not recover actors entirely below the terrain surface.
 
-Customized build defaults
+Release defaults
 
-The default settings now match the preferences read on 2026-10-18 from
-Documents/openmw/OpenMW-EldenCombat-Windows-x64/elden-profile/settings.cfg:
-difficulty -90; Elden music, smooth movement, smooth animation transitions and
-turn-to-movement enabled; 2560x1440 fullscreen; GUI scale 2; view distance 25092;
-distant terrain, radial fog, anisotropy 16, linear mipmaps, per-pixel/clustered
-lighting, sunlight alignment, 64 lights, soft particles, enhanced water,
-shadows and post-processing. All 31 applicable explicit settings are represented
-in files/settings-default.cfg (combat was already enabled). The selected save
-character and current map tab are session state and are not copied into defaults.
+Fresh profiles use 1280x720 windowed mode and GUI scale 1 so installation does
+not assume the build machine's display. The existing gameplay/graphics defaults
+remain: difficulty -90; Elden combat/music, smooth movement/transitions and
+turn-to-movement; distant terrain, enhanced lighting/water and shadows. Choose
+resolution, UI scale and graphics settings for the recipient's PC in the launcher.
+Existing profile overrides, key bindings, content order and saves are preserved.
 
-The profile generator inherits the compiled defaults.bin instead of imposing its
-old 1280x720 windowed override. Existing profile settings, key bindings, content
-order and saves remain untouched. Rebuild/install to update defaults.bin; explicit
-user overrides still take precedence over defaults.
+Shareable Windows releases
+
+CI/eldenring-build-windows.ps1 -ShareableRelease requires a clean source snapshot
+without generated game tables and an empty install directory. It disables
+OPENMW_ELDENCOMBAT_COMPILED_TIMINGS and skips asset discovery and profile setup.
+scripts/package_eldenring_release.py adds source-only extraction tools, license
+notices and setup entrypoints, audits x64 Release binaries and personal paths,
+and writes the clean ZIP/checksum/manifest. The exact matching source archive
+must accompany it. Ordinary personalized build ZIPs are not redistributable.
+
+Recipients install Morrowind and Elden Ring, run Setup-EldenCombat.cmd, then
+Import-EldenRing.cmd using 64-bit Python 3.14. Import reads their own game and
+creates player_anims.bin, action_timings.bin, music and sounds locally. The
+engine loads the versioned, validated timing data through its VFS; absent data
+retains built-in fallback combat. No compiler or generated table in the shared
+executable is needed. README and docs/eldenring-windows-release.txt give the
+short procedure. Generated output and configured installations remain private.
 
 Controls
 

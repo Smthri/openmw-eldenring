@@ -19,6 +19,7 @@
 #include <components/debug/debuglog.hpp>
 #include <components/eldencombat/animations.hpp>
 #include <components/eldencombat/creatureposes.hpp>
+#include <components/eldencombat/timingdata.hpp>
 
 #include <components/resource/animblendrulesmanager.hpp>
 #include <components/resource/keyframemanager.hpp>
@@ -82,6 +83,22 @@ namespace
         const auto [it, inserted] = banks.try_emplace(vfs);
         if (!inserted)
             return it->second;
+        EldenCombat::setRuntimeTimings({});
+        constexpr VFS::Path::NormalizedView timingsPath("animations/eldencombat/action_timings.bin");
+        try
+        {
+            if (const auto timings = vfs->find(timingsPath))
+            {
+                auto data = std::make_shared<EldenCombat::TimingData>(*timings);
+                EldenCombat::setRuntimeTimings(data);
+                Log(Debug::Info) << "Loaded " << data->size() << " Elden combat runtime action timings";
+            }
+        }
+        catch (const std::exception& error)
+        {
+            Log(Debug::Error) << "Cannot load Elden combat runtime timings: " << error.what()
+                << "; using built-in timing fallback";
+        }
         constexpr VFS::Path::NormalizedView path("animations/eldencombat/player_anims.bin");
         try
         {

@@ -1,0 +1,45 @@
+OpenMW Elden Combat — Windows x64
+
+Requirements: Windows 10 1903+ or Windows 11 (64-bit), your installed copies
+of Morrowind and Elden Ring, and 64-bit Python 3.14 with the py launcher.
+Python: https://www.python.org/downloads/windows/
+Internet is needed once for two Python packages. No compiler is needed.
+
+1. Extract the entire OpenMW-EldenCombat-Windows-x64.zip into a new writable
+   folder, for example Games\OpenMW-EldenCombat.
+2. Run Setup-EldenCombat.cmd. Select your Morrowind folder containing
+   Data Files and Morrowind.ini.
+3. Run Import-EldenRing.cmd. Select your installed ELDEN RING\Game folder.
+   Wait for "Elden Ring import completed".
+4. Run Start-EldenCombat-Launcher.cmd to adjust display settings. If it offers
+   the installation wizard, choose Skip. Run Start-EldenCombat.cmd to play.
+
+If a step fails, correct the reported problem and repeat that step.
+The initial display is 1280x720 windowed. Settings and controls are kept in
+elden-profile. Standard saves use Documents\My Games\OpenMW\saves, including
+Windows Documents redirection. Existing profiles are preserved by setup.
+
+Command-line alternative, from PowerShell inside the extracted folder:
+  .\Setup-EldenCombat.cmd -MorrowindDirectory 'D:\Games\Morrowind'
+  .\Import-EldenRing.cmd -EldenRingDirectory 'D:\Games\ELDEN RING\Game'
+For a new profile with package-local saves, add -PortableSaves to setup.
+For Russian Morrowind, add -GameEncoding win1251.
+
+Controls: LMB right-hand light attack; Shift+LMB heavy; RMB guard/off-hand/
+paired attack; E+LMB/RMB switches right/left two-hand grip; tap Space to roll,
+hold Space to sprint; F jump; X crouch; Q lock-on; R draw; C magic; Tab inventory.
+
+This original ZIP contains no proprietary game assets or extracted timing
+tables. Import reads your installed Elden Ring and creates local animations,
+action timings, music and sounds. It never copies the game's Oodle DLL.
+Never distribute the configured folder, .elden-assets, generated resources,
+or their backups. Share only the original ZIP with its matching source archive
+and license notices. No game installation is modified by setup or import.
+
+For updates, extract a new ZIP into a new folder, copy your elden-profile,
+then repeat Import-EldenRing.cmd. Retain the previous folder until it works.
+On another PC run setup afresh to select that PC's Morrowind installation.
+
+Source and releases: https://github.com/Smthri/openmw-eldenring
+The combined engine is GPLv3. See LICENSE.txt, EldenCombat-LICENSE-MIT.txt
+and licenses/ for component and dependency notices.
