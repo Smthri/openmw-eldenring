@@ -18,6 +18,7 @@ import install_eldenring_animations as animations
 import verify_eldenring_copy as verifier
 from eldenring_music import wem
 from eldenring_music.catalog import PROFILES
+from eldenring_animation_fixtures import paired_timings
 
 
 class SourceCopy(unittest.TestCase):
@@ -37,11 +38,18 @@ class SourceCopy(unittest.TestCase):
             "apps/openmw/mwmechanics/eldencombat.hpp", "components/eldencombat/combat.cpp",
             "components/eldencombat/combat.hpp", "scripts/import_eldenring_timings.py",
             "components/eldencombat/rollweighttests.cpp", "components/eldencombat/throwing.hpp",
+            "components/eldencombat/bossarts.hpp", "components/eldencombat/bossarttests.cpp",
+            "components/eldencombat/guard.hpp", "components/eldencombat/guardtests.hpp",
+            "components/eldencombat/grip.hpp", "components/eldencombat/griptests.hpp",
+            "components/eldencombat/guardthrusttests.hpp",
+            "components/eldencombat/nativeattack.hpp",
+            "components/eldencombat/creatureposes.hpp",
             "components/settings/categories/game.hpp", "apps/launcher/settingspage.cpp",
             "apps/launcher/ui/settingspage.ui", "apps/openmw/mwrender/animation.cpp",
             "apps/openmw/mwrender/animation.hpp", "apps/openmw/mwrender/eldenanimation.cpp",
             "apps/openmw/mwrender/eldenanimation.hpp", "CI/eldenring-test-throwing.cpp",
             "CI/eldenring-test-spear.cpp", "CI/eldenring-test-animation-install.py", "ELDEN-COMBAT.txt",
+            "CI/eldenring_animation_fixtures.py",
             "scripts/import_eldenring_sounds.py", "CI/eldenring-test-jump.cpp",
             "files/openmw.cfg", "files/settings-default.cfg", "files/data/fonts/font.ttf",
             "files/data/scripts/input.lua", "files/data-mw/scripts/music.lua", "files/data/builtin.omwscripts",
@@ -69,7 +77,8 @@ class SourceCopy(unittest.TestCase):
             'result.mAnimation = "a001_003000";\nreturn twoHanded ? 10u : 0u;\n'
             'result.mLanding = std::make_shared<ActionDef>(*definitionLanding(config));\n'
             'result.mLandingShort = std::make_shared<ActionDef>(*definitionLandingShort(config));\n'
-            'result.mAnimation = "a023_031070";\nresult.mAnimation = "a023_031071";\n', encoding="utf-8")
+            'result.mAnimation = "a023_031070";\nresult.mAnimation = "a023_031071";\n'
+            + paired_timings(animations.PAIRED_ACTIONS), encoding="utf-8")
         self.animation.write_bytes(self.animation_bank())
         self.music = self.source / "build-eldenring-assets/music/eldenring"
         self.music.mkdir(parents=True)
@@ -164,7 +173,7 @@ class SourceCopy(unittest.TestCase):
                 self.verify()
             path.write_bytes(contents)
 
-    def copy_command(self, dry_run=False):
+    def copy_command(self, dry_run=False, animations_source=None, music_source=None, sounds_source=None):
         if sys.platform == "win32":
             shell = shutil.which("powershell.exe")
             if not shell:
@@ -174,12 +183,20 @@ class SourceCopy(unittest.TestCase):
                        "-SourceDirectory", str(self.source), "-DestinationDirectory", str(self.destination)]
             if dry_run:
                 command.append("-ListOnly")
+            for flag, value in (("-AnimationsSource", animations_source), ("-MusicSource", music_source),
+                                ("-SoundsSource", sounds_source)):
+                if value is not None:
+                    command.extend((flag, str(value)))
         else:
             if not all(shutil.which(tool) for tool in ("bash", "rsync", "realpath", "sha256sum", "python3")):
                 self.skipTest("WSL copy dependencies unavailable")
             command = ["bash", str(self.source / "copy-to-documents.sh"), str(self.destination)]
             if dry_run:
                 command.append("--dry-run")
+            for flag, value in (("--animations-source", animations_source), ("--music-source", music_source),
+                                ("--sounds-source", sounds_source)):
+                if value is not None:
+                    command.extend((flag, str(value)))
         return command
 
     def run_copy(self, dry_run=False):
@@ -229,6 +246,56 @@ class SourceCopy(unittest.TestCase):
                 self.assertEqual(previous.read_bytes(), original)
                 self.assertFalse((self.destination / "CMakeLists.txt").exists())
 
+    def test_missing_combat_feature_source_fails_before_copy(self):
+        for relative in ("components/eldencombat/bossarts.hpp", "components/eldencombat/guard.hpp",
+                         "components/eldencombat/nativeattack.hpp", "components/eldencombat/creatureposes.hpp",
+                         "components/eldencombat/grip.hpp"):
+            source = self.source / relative
+            contents = source.read_bytes()
+            source.unlink()
+            try:
+                result = subprocess.run(self.copy_command(), capture_output=True, text=True,
+                                        errors="replace", timeout=60)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(self.destination.exists())
+            finally:
+                source.write_bytes(contents)
+
+    def test_missing_paired_clips_fail_before_copy(self):
+        self.destination.mkdir()
+        previous = self.destination / "local-assets/player_anims.bin"
+        previous.parent.mkdir()
+        previous.write_bytes(b"existing destination bank")
+        for clip in ("a023_034000", "a023_034030", "a023_034530", "a023_034570", "a023_034571"):
+            with self.subTest(clip=clip):
+                self.animation.write_bytes(self.animation_bank(missing={clip}))
+                result = subprocess.run(self.copy_command(), capture_output=True, text=True,
+                                        errors="replace", timeout=60)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(clip, result.stdout + result.stderr)
+                self.assertEqual(previous.read_bytes(), b"existing destination bank")
+                self.assertFalse((self.destination / "CMakeLists.txt").exists())
+
+    def test_missing_animation_bank_fails_before_copy(self):
+        self.animation.unlink()
+        result = subprocess.run(self.copy_command(), capture_output=True, text=True,
+                                errors="replace", timeout=60)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("player_anims.bin", result.stdout + result.stderr)
+        self.assertFalse(self.destination.exists())
+
+    def test_stale_paired_timings_fail_before_copy(self):
+        header = self.timing_header.read_text()
+        for old, new, message in (("0.02f, false, true", "0.02f", "authored hand metadata"),
+                                   ("Action::PairedLight4", "Action::Light4", "paired actions")):
+            with self.subTest(error=message):
+                self.timing_header.write_text(header.replace(old, new))
+                result = subprocess.run(self.copy_command(), capture_output=True, text=True,
+                                        errors="replace", timeout=60)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(message, result.stdout + result.stderr)
+                self.assertFalse(self.destination.exists())
+
     def test_stale_staged_animation_cannot_hide_new_neighbor_without_explanation(self):
         # The staged bank wins source selection. If it is old, refuse to modify
         # the destination and explain how to select the complete neighboring bank.
@@ -247,7 +314,7 @@ class SourceCopy(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("a000_050170", output)
         self.assertIn("no source files were copied", output)
-        self.assertIn("replace local-assets", output)
+        self.assertIn("-AnimationsSource" if sys.platform == "win32" else "--animations-source", output)
         self.assertIn("ELDEN-RING-Combat-Rewrite", output)
         self.assertEqual(previous.read_bytes(), neighbor.read_bytes())
         self.assertEqual(previous_source.read_bytes(), b"preserve previous source until bank validation succeeds\n")
@@ -289,6 +356,32 @@ class SourceCopy(unittest.TestCase):
         self.sounds = staged
         self.run_copy()
         self.verify()
+
+    def test_explicit_sources_override_stale_staged_assets(self):
+        external = self.root / "external assets Кириллица"
+        external.mkdir()
+        bank = external / "player_anims.bin"
+        bank.write_bytes(self.animation.read_bytes())
+        music_source = external / "music"
+        sounds_source = external / "sounds"
+        shutil.copytree(self.music, music_source)
+        shutil.copytree(self.sounds, sounds_source)
+        self.animation.write_bytes(b"stale bank")
+        (self.music / "manifest.json").write_text("invalid")
+        (self.sounds / "manifest.json").write_text("invalid")
+        result = subprocess.run(self.copy_command(animations_source=bank, music_source=music_source,
+                                                  sounds_source=sounds_source), capture_output=True,
+                                text=True, errors="replace", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        verifier.verify(self.source, self.destination, bank, music_source, sounds_source)
+
+    def test_invalid_explicit_asset_does_not_fall_back_or_modify_destination(self):
+        for option in ("animations_source", "music_source", "sounds_source"):
+            with self.subTest(option=option):
+                result = subprocess.run(self.copy_command(**{option: self.root / "missing input"}),
+                                        capture_output=True, text=True, errors="replace", timeout=60)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(self.destination.exists())
 
 
 if __name__ == "__main__":

@@ -488,7 +488,7 @@ if ($buildLauncher) {
 }
 $ctest = Join-Path (Split-Path -Parent $cmake) 'ctest.exe'
 if (-not (Test-Path -LiteralPath $ctest)) { throw 'ctest.exe is missing from the CMake installation.' }
-Invoke-Checked $ctest @('--test-dir', $BuildDirectory, '-C', $Configuration, '-R', '^elden((combat|ai|damage|rollweight)(-imported)?|input|animation|locomotion|navigation|actorpassthrough|spear|retarget|grip|jump|spellcasting|throwing|bow)$', '--output-on-failure', '--no-tests=error')
+Invoke-Checked $ctest @('--test-dir', $BuildDirectory, '-C', $Configuration, '-R', '^elden', '--output-on-failure', '--no-tests=error')
 if ($AnimationsSource) {
     # Verify the incantation clips and their release frames in the packaged bank.
     Invoke-Checked (Join-Path $binaryDirectory 'eldenspellcasting-tests.exe') @($AnimationsSource)

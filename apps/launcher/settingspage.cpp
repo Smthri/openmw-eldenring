@@ -257,6 +257,7 @@ bool Launcher::SettingsPage::loadSettings()
         loadSettingInt(Settings::game().mActorCollisionShapeType, *actorCollisonShapeTypeComboBox);
         eldenCombatAiGroupBox->setEnabled(Settings::game().mEldenRingCombat);
         loadSettingBool(Settings::game().mEldenRingMusic, *eldenRingMusicCheckBox);
+        loadSettingBool(Settings::game().mDisableParalysis, *disableParalysisCheckBox);
         eldenAiAttackDelaySpinBox->setValue(Settings::game().mEldenRingAiAttackDelay);
         loadSettingInt(Settings::game().mEldenRingAiMaxComboAttacks, *eldenAiMaxComboAttacksSpinBox);
         eldenAiBlockChanceSpinBox->setValue(Settings::game().mEldenRingAiBlockChance * 100.0);
@@ -572,6 +573,7 @@ void Launcher::SettingsPage::saveSettings()
         saveSettingInt(*actorCollisonShapeTypeComboBox, Settings::game().mActorCollisionShapeType);
         Settings::game().mEldenRingAiAttackDelay.set(eldenAiAttackDelaySpinBox->value());
         saveSettingBool(*eldenRingMusicCheckBox, Settings::game().mEldenRingMusic);
+        saveSettingBool(*disableParalysisCheckBox, Settings::game().mDisableParalysis);
         saveSettingInt(*eldenAiMaxComboAttacksSpinBox, Settings::game().mEldenRingAiMaxComboAttacks);
         Settings::game().mEldenRingAiBlockChance.set(eldenAiBlockChanceSpinBox->value() / 100.0);
         Settings::game().mEldenRingAiDodgeChance.set(eldenAiDodgeChanceSpinBox->value() / 100.0);

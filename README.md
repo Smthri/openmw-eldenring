@@ -127,13 +127,21 @@ missing imported tracks fall back to Morrowind's music.
 | --- | --- |
 | Roll / backstep; sprint | Tap/release Space; hold Space |
 | Jump; crouch | F; X |
-| Light attack | Left mouse |
+| Right-hand light attack | Left mouse |
 | Heavy / charged attack; guard counter | Shift + left mouse |
-| Guard / off-hand attack | Right mouse |
+| Guard / off-hand or paired attack | Right mouse |
 | Two-hand right / left armament | E + left / right mouse |
 | Lock on / release | Q or middle mouse |
 | Draw weapon; ready magic | R; C |
 | Interact; inventory | E on release; Tab |
+
+Inventory equipping fills the right hand first; equipping another melee weapon
+fills the left for dual wielding. Use E + mouse to switch either armament into
+or out of a two-handed grip. With matching weapon classes in both hands, right
+click uses the dedicated paired combo and its running, roll and jump attacks.
+Left click attacks with the right-hand weapon. Sheathing hides both weapons;
+shields retain their normal visibility. With a spear and shield, hold right
+mouse and press left mouse to thrust while blocking.
 
 Existing key bindings are preserved; use **Reset to Defaults** in Controls to
 adopt the new layout. See [ELDEN-COMBAT.txt](ELDEN-COMBAT.txt) for gamepad

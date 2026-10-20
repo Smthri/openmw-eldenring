@@ -33,6 +33,8 @@ namespace EldenCombat
         Button mGuard;
         Button mJump;
         Button mCritical;
+        // One-shot AI boss request; never selected by ordinary light/heavy input.
+        Button mSpearThrust;
         // Actor-local horizontal direction: positive X right, positive Y forward.
         float mMoveX = 0.f;
         float mMoveY = 0.f;
@@ -50,6 +52,8 @@ namespace EldenCombat
         bool mTwoHanded = false;
         // Two-handing the left weapon routes primary attacks to that hand.
         bool mTwoHandedLeft = false;
+        // Grip swap recovery buffers requests until both hands are available.
+        bool mHandsBusy = false;
         // Set by the world adapter after checking the target's vulnerability and reach.
         bool mCriticalAvailable = false;
         // Tactical AiCombat owns these buttons instead of the legacy attack-button adapter.
@@ -131,11 +135,14 @@ namespace EldenCombat
         PairedRoll,
         PairedBackstep,
         PairedJump,
+        SpearThrust,
+        GuardThrust,
         Roll,
         CrouchRoll,
         Backstep,
         Jump,
         GuardHit,
+        Deflected,
         GuardBreak,
         HurtSmall,
         HurtMiddle,
@@ -190,6 +197,7 @@ namespace EldenCombat
         float mSprintDrain = 11.f;
         float mGuardStaminaTaken = 0.55f;
         float mSpeedMultiplier = 1.f;
+        float mLeftSpeedMultiplier = 1.f;
         // Horizontal roll distance in metres, selected from the current equipment-load tier.
         // Captured in the action definition when a roll actually starts, including queued rolls.
         bool mWeightBasedRollDistance = true;
@@ -212,6 +220,9 @@ namespace EldenCombat
         float mGuardDamage = 1.f;
         float mHitStop = 0.05f;
         bool mLeftHand = false;
+        // Extracted contacts identify the striking weapon even when hits do
+        // not alternate hands. Legacy/fallback definitions use index parity.
+        bool mHasHandAssignment = false;
     };
 
     struct ActionDef
@@ -350,10 +361,16 @@ namespace EldenCombat
 
         Update update(const Input& input, float seconds);
         HitResult receiveHit(const Incoming& hit);
+        // Called for an actual blocked melee contact. Consumes every remaining
+        // window and the buffered chain before starting attacker recoil.
+        bool deflectHit(const Attack& hit);
         Attack attack() const;
         std::optional<Attack> activeHit() const;
         // A hit remains available throughout its window until world contact consumes it.
         void markHit();
+        // Try other contacts this update after a miss; this window can retry
+        // next update while live, without spending stamina a second time.
+        void deferHit();
         void applyHitStop(float seconds);
         float hitStopRemaining() const { return mHitStopSeconds; }
         // Called only after an unblocked physical hit; zero damage cannot grant protection.
@@ -397,6 +414,7 @@ namespace EldenCombat
             Dodge,
             Jump,
             Critical,
+            SpearThrust,
         };
 
         struct BufferedRequest
@@ -412,8 +430,9 @@ namespace EldenCombat
         Action nextLight() const;
         Action nextHeavy() const;
         Action nextLeft() const;
-        bool pairedWeaponsActive() const;
+        bool pairedWeaponsActive(bool twoHanded) const;
         bool leftButtonAttacks(const Input& input) const;
+        bool canGuardThrust(const Input& input) const;
         float cancelFrame(Request request) const;
         void spend(float normalizedCost, Update* result = nullptr);
         Attack makeAttack(std::size_t hitIndex) const;
@@ -447,12 +466,14 @@ namespace EldenCombat
         bool mTwoHanded = false;
         bool mTwoHandedLeft = false;
         bool mGrounded = true;
+        bool mMirrorAttackRootMotion = false;
         bool mFlying = false;
         // A jump or jump attack may remain grounded while its accepted physics
         // pulse waits for a fixed step. Land it only after observing flight.
         bool mJumpWasAirborne = false;
         std::uint32_t mPaidHits = 0;
         std::uint32_t mLandedHits = 0;
+        std::uint32_t mDeferredHits = 0;
         std::uint64_t mSequence = 0;
         // Crossed windows remain available until the next update, even at low frame rates.
         std::array<Attack, MaximumHits * 2> mAvailableHits{};

@@ -463,6 +463,7 @@ namespace MWRender
 
         // The combat controller owns this clock, including hit-stop and weapon speed.
         bool hasEldenAnimation() const { return mEldenAnimation != nullptr; }
+        bool hasEldenEmbeddedSpear() const;
         bool playEldenAnimation(std::string_view clip, float frame, bool loop, float duration, float yaw = 0.f,
             std::string_view leftArm = {}, std::string_view rightArm = {}, std::string_view grip = {},
             bool upperBodyOnly = false, bool bow = false, float bowDraw = 0.f);

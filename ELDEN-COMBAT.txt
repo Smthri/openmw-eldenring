@@ -27,6 +27,37 @@ melee, guard, dodge, reaction and death poses, plus supported casting and
 throwing gestures. Nonhumanoid, incomplete and unsupported skeletons retain
 their native animations; missing clips also fall back to native poses.
 
+The native ashslave, ashzombie, ashvampire, dagothr, cr_draugr and draugrlord
+model families also use these existing humanoid clips and weapon timings.
+They omit Bethesda's Bipedal gameplay flag despite having compatible upright
+skeletons. Admission checks the exact model path and complete native rig; a
+matching name alone cannot enable an incomplete or quadrupedal skeleton.
+No new creature assets are required: this uses the existing neighboring
+reference bank. Rats, wolves, guar, alit, kagouti, scrib, kwama, the Imperfect
+and other unmatched rigs retain Morrowind animations and timing data.
+
+Hircine's Aspect of Guile (BM_hircine_huntaspect, r/hircine.nif) now uses the
+existing two-handed Short Spear moveset: a036 attacks and a013 ready/movement
+poses, with ordinary action timings and hit windows at their source speed.
+Imported creature locomotion retains the native forward gait/walk velocity
+ratio. Guile's native run is about 4.87 times his walk, which was previously
+lost when imported poses bypassed native root-motion travel; both actual speed
+and imported stride now follow that native ratio in every travel direction.
+NPC speeds and native swimming/flying/sneaking movement are unchanged.
+Previously he used native Bloodmoon animations and native text-key timings:
+his record omits both the Bipedal and Weapon flags, and his visible spear is
+built into the creature mesh rather than equipped from his loot container.
+The adapter checks his complete upright rig and the embedded spear geometry,
+then attaches that spear to the animated right palm with its own axis correction.
+Imported pose playback queries equipment only for actors with an inventory;
+Guile's mesh spear is driven directly by the embedded attachment adapter.
+Native damage, spells, quest scripts and loot remain engine-owned. Missing or
+incompatible assets retain the native animation/timing path. Hircine's dialogue
+forms and the bear/wolf aspects keep their native poses. Both the base model
+and OpenMW's animated xhircine.nif variant are admitted; the engine selects the
+latter when xhircine.kf exists. The curated ash/Dagoth/draugr models likewise
+accept their exact animated variants. No new assets are needed.
+
 Creatures without an imported pose adapter also retain native animation-driven
 locomotion during wandering and pursuit. Native creature running uses the walk
 clip to scale animation speed, then takes actual travel from the running clip.
@@ -37,8 +68,8 @@ creatures, missing sideways/backward gaits fall back to an available forward
 gait while root movement follows the requested travel direction. This prevents
 pauses on path corners and during smoothed turns without changing the route.
 
-Non-bipedal creatures without imported pose support, including the Imperfect,
-use their selected native attack group's start/hit/stop keys for melee timing.
+All creatures without imported pose support, including unsupported bipedal
+rigs and the Imperfect, use their selected native attack group's start/hit/stop keys for melee timing.
 The group is selected before the controller advances and plays at native speed.
 One impact occurs at its hit key (at start when that key is absent), and the
 entire native recovery finishes before another swing or movement cancellation.
@@ -108,10 +139,15 @@ as the source reference had tilted the native feet down by about 39 degrees.
 Neutral calibration preserves the native sole alignment while retaining
 animated heel lift, toe-off and whole-body rotations.
 
-Arm bend planes remain continuous through weapon swings and nearly straight
-elbows. Selecting their orientation against the chest on every sample had caused
-near-180-degree twists within a single source frame in several imported combat
-clips. New clip/layer transitions retain the existing displayed-pose crossfade.
+Arm elbow-plane orientation is calibrated once from the source neutral pose.
+Bent elbows retain that signed plane; nearly straight elbows transport the last
+usable plane and recover smoothly as the bend becomes measurable. Choosing a
+hemisphere from the chest or previous frame could leave the shoulder inverted
+after a spear roll attack. The forearm now follows the authored palm's pronation
+instead of leaving almost 180 degrees of that rotation in the wrist. Bind-pose
+calibration preserves native arm lengths and the hand's model-space orientation.
+Transition tests cover the three-hit longsword light chain and one-/two-handed
+spear attacks after rolling. Clip/layer changes retain the displayed-pose fade.
 
 Imported transitions blend bone rotations in model space before converting
 them back to each displayed parent's local frame. Independently blending
@@ -336,6 +372,63 @@ with scripts/install_eldenring_music.py --source <music/eldenring> --package
 <package>; replacing older imported music retains a backup outside the package.
 Adding the toggle and Lua binding requires rebuilding the engine and launcher.
 
+Boss weapon arts
+
+The 54 exact named opponents in the curated boss encounter list receive eleven
+authored OpenMW arts. The original ten have an interruptible 0.65-1.2 second
+warning using native magic casting visuals and sounds, one heavy swing, and a
+12-16 second cooldown. These use the existing imported attack animation when the rig is
+supported, otherwise its native creature swing and authored impact key.
+
+  Dagoth Ur / Sixth House bosses    health and fatigue drain
+  Almalexia                        fire
+  Vivec                            shock
+  Imperfect                        shock and fatigue damage
+  Karstaag / Aesliip                frost and brief burden
+  Hircine's Guile                  quick spear thrust and fatigue damage
+  Other Hircine forms / Hunt rivals fatigue damage and brief burden
+  Undead / vampire bosses / Umbra   health absorption
+  Archmages / selected Daedra      shock or fire
+  Assassins / scheming rulers      poison
+  Martial bosses                   fatigue damage and brief burden
+
+Guile's Hunter's Thrust has a 30 percent chance per eligible melee opener,
+a 0.25-second interruptible tell, and a 12-second cooldown. It uses the existing
+two-handed Short Spear stab at 1.6 times normal playback speed, synchronizing
+its pose, one hit window, and collision-resolved root movement. The strike
+lands 0.375 seconds into the thrust and the action lasts about 1.17 seconds.
+It has no charge restart or follow-up combo; ordinary attacks retain their
+timings. Native thrust damage applies once, plus 15 fatigue damage for one
+second on an unblocked hit. The validated embedded spear and required clip
+must be available; unsupported replacement rigs retain Hunter's Rend.
+
+The native CastSpell pipeline applies magic once on successful, unblocked
+melee contact. Misses and blocks cannot trigger it; native resistance,
+absorption, reflection, hit sounds and active-effect handling remain intact.
+The selected swing pays its usual stamina cost once. Arts do not alter quest
+scripts or add spells to the actor's spellbook; normal spell/ranged selection
+remains native. Leaving melee, interruptions, death/load and teleports cancel
+pending arts. Cooldowns and action state are transient. Disabling Elden combat
+disables these arts. They are OpenMW extensions, not imported Elden Ring skill
+animations or exact replicas of its boss movesets.
+
+Guard poses and attacker recoil
+
+Held guard arm layers now remain on the shield or two-handed weapon through
+GuardHit, including hit-stop and button release during the reaction. Guarded
+movement faces the aiming direction and uses directional gaits, keeping the
+visible shield aligned with the defense direction.
+
+A successfully blocked ordinary one-handed light, off-hand or paired chain
+interrupts the attacker. The controller clears remaining hit windows and the
+old queued combo, stops the imported attack pose and plays native Morrowind
+recoil with an authored 18-frame recovery. No additional stamina is charged.
+Heavy, two-handed, running/jump/contextual attacks, counters and native creature
+swings keep their follow-through. Guard breaks and ranged contacts do not
+cause a weapon rebound. This is an integration rule; it does not reconstruct
+Elden Ring's complete per-weapon/shield hardness tables. No unverified source
+clip is relabeled as an Elden weapon-bounce animation.
+
 Character-specific boss music
 
 Dagoth Ur uses Mohg, Lord of Blood: a ritualistic, oppressive theme for the
@@ -416,16 +509,56 @@ engine-version requirements. Some existing slots reference Rich Creeper.ESP;
 enable the original required plugins in the launcher if they are available.
 OneDrive files must be downloaded locally for the engine to read them.
 
-Spear power-attack orientation
+Disable paralysis
+
+Settings > Gameplay > Disable paralysis sets the duration and remaining time
+of every paralysis effect to zero for the player, NPCs and creatures,
+independently of Elden combat. The setting defaults to off and is stored as
+[Game] disable paralysis = false. New and already active paralysis effects end
+through the normal effect cleanup, including ability and constant effects.
+Other effects in the same spell keep their ordinary duration and behavior.
+Turning the option off allows new paralysis effects normally; expired effects
+do not resume. Source spell records are unchanged.
+
+Spear grip and power-attack orientation
 
 Imported spear poses now drive the native Weapon Bone from the clip's R_Weapon
 axes. Both the native spear mesh and imported weapon point toward local +Y;
 deriving the weapon direction from the hand left the spear standing vertically
 during a forward heavy thrust. Spear finger grips are anchored to the animated
 wrist so the shaft can slide without stretching the hand's inferred frame.
-The attachment preserves native translation/scale, blends in model space, and
+The attachment preserves native scale, blends in model space, and
 returns control to native animations when imported spear posing ends. The
 change applies to equipped native spear types, including NPC guards.
+
+The frontmost gripping hand normally sits 40 percent of the weapon's length
+above its butt, below the midpoint. In two-handed poses the left hand is usually ahead
+of the right: anchoring the rear/right hand at 40 percent had left the front
+hand close to the tip. Both displayed palms now determine the grip offset for
+equipped player/NPC spears and Guile's embedded spear, including first person.
+The renderer measures the equipped mesh's shaft cross-section
+and shifts the attachment along the animated weapon axes to keep that point at
+the native palm. This follows weapon size, character scale and first-person
+pitch without changing reach, collision or damage. Geometry is measured when
+the equipped model changes; unusable geometry retains native placement.
+The rearmost palm stays at least 4 percent above the butt. On unusually short
+shafts during the widest two-handed heavy poses, the front grip moves forward
+only as far as necessary to keep both hands on the spear without changing the
+authored arm spacing. All native spears keep the front hand below midpoint in
+ready/run/light-stab poses; the shortest native spear can reach about 55 percent
+briefly during a wide first-person heavy thrust.
+Clearing imported posing restores the native attachment rotation and translation.
+Guile's embedded spear uses the same placement and follows his current hand even
+when its sibling node is visited before the arm. His spear's local +Z axis is
+converted to the imported weapon frame; ordinary equipped spears use local +Y.
+
+First-person spears retain the native neck aiming rotation after the imported
+weapon alignment, so looking down tilts the spear down with the hand. Camera
+pitch stays separate from animation blend history, including attack changes;
+the native aiming factor, scale and third-person axes stay unchanged.
+Synthetic callbacks and the local native first-person skeleton cover
+up/down aiming and changing pitch during blends; visual gameplay needs a rebuilt
+engine. No regenerated animation assets are needed.
 
 Sprint jumps, weapon damage, and crowd hits
 
@@ -517,19 +650,22 @@ thrown weapons use the imported dart gesture, and bows use imported draw,
 aim and release phases synchronized to native shooting.
 The original native tracks still provide movement/text-key bookkeeping.
 Elden Ring parrying, weapon skills and stat
-scaling are also absent from the supplied recreation.
+scaling are absent from the supplied recreation; the boss arts above are
+authored extensions using native Morrowind effects.
 
-Code and asset audit, 2026-10-17
+Code and asset audit, 2026-10-19
 
-The local timing header is regenerated from extracted.rs: 1,080
+The local timing header is regenerated from extracted.rs: 1,085
 mapped action definitions covering 25 extracted weapon classes. The Windows
 project must be rebuilt with the new header, including clip/stance metadata.
 Native equipment currently selects only 11 of those classes, including shield
 and torch; native weapon types do not identify every Elden Ring moveset.
 
-All previous 1,520 clips plus 29 bow action/carry/movement clips are present
-in player_anims.bin (1,549 clips, 94,905 frames). The earlier clips remain
-byte-identical. Binary structure, clip references and all 13,381,605 pose
+The bank now includes 175 paired actions across 23 extracted classes. Resolving
+cross-category TAE imports recovers seven curved-greatsword paired clips from
+their authored source. Every existing clip remains byte-identical.
+player_anims.bin contains 1,556 clips and 95,374 frames. Binary structure,
+clip references and all 13,447,734 pose
 values pass validation.
 This covers the selected player clips, not every player/enemy animation in
 Elden Ring. The ERAN loader shares one immutable bank across actors. The
@@ -572,7 +708,7 @@ the engine changes still require Windows gameplay validation after rebuilding.
 
 Remaining fidelity gaps include animated blade contact, ordinary jump/fall
 landing variants, authored directional dodge/reaction selection (front rolls are
-turned toward the dodge direction), and stop/crouch/grip-transition states.
+turned toward the dodge direction), and stop/crouch-transition states.
 The baked format has positions for only 38 joints and full orientation for
 three; retargeted limb twist/fingers and weapon attachment angles are approximate.
 Custom and beast skeletons, first-person framing and equipment proportions need
@@ -585,7 +721,7 @@ the Morrowind stats/skill scaling described above.
 
 The supplied Elden Ring Steam installation has now been selectively read to
 generate extracted.rs and player_anims.bin locally. The imported timing table
-contains 1,080 supported actions. Baked skeletal assets are kept local and must
+contains 1,085 supported actions. Baked skeletal assets are kept local and must
 be staged in resources/vfs/animations/eldencombat/player_anims.bin in the package.
 The Windows build and sync helpers stage the bank as well as the engine changes.
 Manual installation, after rebuilding the engine and regenerating timings:
@@ -764,6 +900,28 @@ geometry, other actors, combat hits and projectiles retain their normal behavior
 The visual factor composes with native invisibility, chameleon and distance
 fading without adding a spell. Passage state is temporary and is not saved.
 
+NPC terrain recovery
+
+Active outdoor NPCs are checked every 0.5 seconds, independently of the Elden
+combat toggle. An NPC whose feet are more than max(64 units, collision half-height)
+below loaded terrain is returned to a clear ground position at the same X/Y.
+This also handles idle NPCs and already-buried NPCs from an existing save; it
+requires no quest edits or console commands. The check confirms the terrain
+height against actual heightfield collision and validates the full actor shape.
+Nearby usable underground floors/ceilings, bridges, normal swimming, shallow
+intersections and ordinary falls remain untouched. Players, interior cells,
+noclip and flying NPCs are excluded; blocked destinations are left alone.
+
+Recovery runs after the preceding physics batch is synchronized and before the
+next batch starts, using current scripted position, shape and static geometry.
+It resets falling inertia/accumulation and transient landing/passage/stuck state
+without changing health, AI packages, quest progress or saves directly. Missing
+terrain is never guessed. CI/eldenring-test-ground-recovery.cpp exercises real
+Bullet collision with synthetic terrain and obstacles. Ristaag's Rolf Long-Tooth
+has valid authored placement/travel coordinates; the original burial trigger
+has not been reproduced. Native unstuck handling alone skipped idle actors and
+could not recover actors entirely below the terrain surface.
+
 Customized build defaults
 
 The default settings now match the preferences read on 2026-10-18 from
@@ -793,9 +951,10 @@ Combat actions and the heavy modifier are rebindable:
   WASD / mouse: move / look; Left Alt: hold to walk
   Space: tap/release to roll; no direction gives a backstep; hold to sprint
   F: jump; X: toggle crouch
-  Left mouse: light attack (with a melee weapon drawn)
+  Left mouse: right-hand light attack (selected armament when two-handing)
   Shift + left mouse: heavy attack; hold to charge; after a block, guard counter
-  Right mouse: guard with a shield/two-handed grip; otherwise off-hand attack
+  Right mouse: guard with a shield/two-handed grip; paired attack with matching
+    weapons, otherwise the off-hand weapon's attack
   E + left / right mouse: toggle two-handed grip of the right / left armament
   Right / left arrow: next right-hand weapon / next off-hand armament
   Q or middle mouse: acquire/release lock-on; acquiring switches to third person
@@ -810,7 +969,8 @@ one press. The configured inventory key takes priority over focus cycling in
 those windows; holding it does not repeatedly open and close the inventory.
 
 The default gamepad layout uses B for dodge/sprint, A for jump, L3 for crouch,
-RB for light attack, RT for charged heavy/counter, LB for guard/off-hand attack,
+RB for right-hand light attack, RT for charged heavy/counter, LB for guard or
+paired/off-hand attack,
 R3 for lock-on and D-pad right/left for right/off-hand cycling. Y + RB/LB selects
 the right/left grip. Y alone interacts on release; Back opens inventory, Start
 opens the menu, X draws/sheathes, D-pad up readies magic and D-pad down opens the
@@ -833,10 +993,65 @@ sprint restores target-facing directional movement. Slow walking and crouch togg
 on in a fresh Elden profile. Existing Lua movement preferences remain saved and
 can be changed under the movement settings.
 
-One-handed melee weapons may occupy the left equipment slot. Normal inventory
-use still chooses the primary weapon; off-hand selection is explicit through
-Left arrow / D-pad left or Lua's equipment API. Matching weapon classes enable paired attack chains.
-Either armament can be selected for a two-handed grip. Left shields use the
+Melee weapons, including native spears and greatswords, may occupy either hand.
+Inventory equipping fills the right hand first, then equips a second melee weapon
+in the left. Further inventory selections replace the left armament; right-hand
+cycling/hotkeys still select the primary. Left arrow / D-pad left and Lua's
+equipment API also select the off-hand. One inventory instance cannot occupy
+both slots. Matching weapon classes with an extracted paired moveset use their
+dedicated paired chain on right mouse / LB, including running, roll, backstep and
+jump attacks. Left mouse / RB uses the right weapon's ordinary light chain and
+contextual attacks. Buffered primary attacks resolve against the current grip
+when they start. Primary and paired combos retain their separate source cancel
+windows. Heavy attacks keep the selected
+primary weapon's heavy moveset. Mixed classes keep the primary light attack and
+use the off-hand weapon's own light attacks and speed on right mouse / LB.
+Native weapon type no longer
+forces the player's grip: single-hand is the default, and E + mouse selects
+either armament for two-handed use or returns it to single-hand use.
+
+Grip changes play the existing authored preparation/completion clips. At 30 fps,
+the selected hand changes at frame 3, the second phase begins at frame 5,
+buffered actions unlock at frame 12, and the visual transition ends at frame 22.
+Changing equipment, death or leaving melee cancels a pending change. Grip changes
+do not refill fatigue or require a regenerated animation bank. Missing clips
+retain native poses. One-/two-handed attacks use their distinct imported action
+definitions, hit windows and playback speeds.
+Shared weapon poses are reflected for left-hand two-handed use, with the native
+left attachment and opposite source strafe to preserve travel direction. Shield
+and grip-change clips already authored for the left hand keep their original
+orientation. Native equipment stays in its original inventory slot.
+Ordinary dual-wield weapons follow the source left-weapon axes at the displayed
+left palm, with the authored left socket's reversed blade axis corrected for
+native weapon meshes. This correction applies only to ordinary off-hand weapons;
+the already reflected left two-hand poses retain their existing orientation.
+Left spears use their own measured shaft contact, independently of
+a right-hand spear; changing grip or leaving imported playback restores both
+native attachments. Left/paired attacks retain their authored off-hand finger
+curl instead of inheriting the right weapon's carry grip.
+Left weapons follow the native weapon attach/detach keys, so sheathing hides
+both weapons and drawing restores the off-hand weapon. Inventory refreshes
+cannot show a weapon while sheathed. Shields and torches retain their own
+visibility and optional shield-sheathing behavior.
+
+Extracted hit records retain the source hand for each contact; paired sequences
+can strike left first or use the same hand twice. Airborne attacks retain all
+their source contacts. Landing preserves each hand's consumed or expired hits
+and the prepaid stamina, allowing an unfinished opposite-hand hit without
+repeating damage. Native equipment, reach and damage remain authoritative.
+Re-extract timings with the updated neighboring tools, import the generated
+header and use the expanded bank together when rebuilding.
+
+A right-hand spear with a left-hand shield can thrust while guard is held:
+hold right mouse and press left mouse (gamepad LB + RB). This adapts the existing
+one-handed spear opener with a shield-arm layer; the bank has no separate
+shield-poke clip. It retains that opener's timing and single stamina/contact
+payment, uses native thrust damage, and removes forward root displacement.
+An ordinary block during the poke preserves the attack clock; release lowers
+guard, and depleted stamina still causes guard break. Heavy attacks retain the
+ordinary guard-counter behavior. The same logic supports the GreatSpear profile.
+
+Left shields use the
 source's real shield action timings and poses, with native hand-to-hand health
 damage because Morrowind armor records have no weapon damage. Off-hand mesh
 placement uses the existing Morrowind attachment bones and needs visual checking
@@ -919,8 +1134,10 @@ The eldengrip suite checks handle sections, short and offset grips, gaps and
 unusable geometry. The eldenspear harness also covers native two-joint finger
 curl, shield-release blending and two-handed sword carry closure through actual
 bone callbacks, including weapon changes and transitions. It now links and runs
-locally with pinned OSG/OpenThreads, passing 940 synthetic and 9,931 real-bank
-assertions. The actual native xbase skeleton + Chrysamere mesh probe confirms
+locally with pinned OSG/OpenThreads. Current combo/grip checks cover both native
+player skeletons, 30/60/120 fps, the three-light longsword chain and spear attacks
+after rolling, as well as selected-left grips and mixed/paired off-hand weapons.
+The actual native xbase skeleton + Chrysamere mesh probe confirms
 idle/run/sprint palm contact below 0.000025 native units. These CPU callback
 checks create no graphics context; visual confirmation still needs the rebuilt
 game. The Windows build helper includes all three renderer suites.
@@ -1005,17 +1222,19 @@ The shell helper uses WSL's rsync directly and does not need Windows interop.
 
 Alternatively, run in Windows PowerShell (assuming the Ubuntu WSL distribution):
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\<linux-user>\openMW-eldenring\openmw\CI\eldenring-copy-to-documents.ps1"
+  powershell -NoProfile -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\<linux-user>\openMW-eldenring\openmw-eldenring\CI\eldenring-copy-to-documents.ps1"
 
 The copy excludes Git metadata, existing builds, dependency downloads and local
 toolchains. It includes the generated timing header and copies the validated
 animation bank to local-assets/player_anims.bin and available imported music to
 local-assets/music/eldenring, plus dodge, block and counter recordings to
 local-assets/sound/eldenring/dodge for the Windows build helper. Both copy paths
-validate the full animation inventory before writing: the current 1,549-clip
+validate the full animation inventory before writing: the current 1,556-clip
 bank includes all 14 seal/incantation phases, the dart throw, 29 bow clips,
-244 jump-attack landing clips and one-/two-handed locomotion for every mapped
-stance.
+all jump-attack landing clips and one-/two-handed locomotion for every mapped
+stance. They also require all 175 paired actions with explicit hit-hand metadata
+and their airborne/landing phases, rejecting stale generated timings before
+changing destination files.
 An older bank with only the ERAN
 header and melee clips is rejected before changing destination files. Imported
 audio currently includes 15 combat recordings and 28 music recordings; their
@@ -1154,31 +1373,13 @@ Morrowind game data is required to play. It is not bundled in the package.
 The component retains the recreation's MIT copyright notice and license in
 components/eldencombat/LICENSE-MIT.txt; the combined OpenMW engine remains GPLv3.
 
-2026-10-17 pose follow-up validation
+Local renderer validation
 
-Both engine checkouts pass 15 standalone suites, 12 installer and 12 copy
-regressions, plus actual-bank combat/gait checks. Production renderer callbacks
-now link and run locally against pinned OSG/OpenThreads: 940 synthetic and
-9,931 real-bank assertions pass. The original pre-fix renderer reproduces the
-shield release failure and Chrysamere running/sprinting hand offset. The
-callback executable requires no graphics context and is not a full engine run.
-Ignored local runner: ../openmw/build-tools-local/run-renderer-validation.py.
-Reports: build-eldencombat/*pose-followup-final* (newer renderer report prefix
-renderer-shield-grip-final), with the actual native mesh/skeleton probe under
-newer build-eldencombat/elden-native-grip-*.
+The ignored build-tools-local/run-renderer-validation.py helper builds the
+production callback harness against pinned local OSG/OpenThreads. From this
+checkout run:
+  python3 build-tools-local/run-renderer-validation.py . renderer-check
 
-The original openmw checkout was copied to Windows with SHA verification of
-3,836 source/resource files, one bank, 28 music recordings and 15 combat sounds.
-The guarded updater exited 0 after the VS2026 Release engine, launcher, wizard
-and navmesh build/link. All 18 Windows CTest suites passed. Native real-bank
-checks passed 727,386 spell, 1,141,186 dart, 327,150 retarget and 9,931 weapon
-callback assertions. openmw and Start-EldenCombat command-line startup/version
-checks passed with version 0.52.0. The installed package is
-C:\Users\<user>\Documents\openmw\build-eldenring-package-x64; its executable
-matches Release and its bank matches the current 1,520-clip bank. The refreshed
-ZIP contents/checksum passed verification and existing openmw.cfg/settings.cfg
-remained byte-identical. No interactive gameplay or visual check was performed.
-Complete build and CTest logs are under original openmw/build-eldencombat/
-windows-pose-followup-{build,build-errors,ctest}.log, with update.log and
-before/after JSON snapshots using the same prefix. The separate captured-output
-log contains truncated native install output, not the complete build report.
+It executes synthetic and actual-bank CPU scene-graph checks without a graphics
+context. Reports go to build-eldencombat/. This does not substitute for full
+engine linking, skinned rendering or interactive gameplay validation.

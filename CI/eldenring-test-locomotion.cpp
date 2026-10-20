@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace
@@ -67,6 +68,46 @@ namespace
             "native forward analog speed changed");
         close(EldenCombat::movementSpeed(0.f, 1.f, false, true), 0.f, "immobile actors can move");
         close(EldenCombat::movementSpeed(maximumSpeed, 0.f, true, true), 0.f, "zero input causes movement");
+    }
+
+    void creatureRunningPace()
+    {
+        for (float walk : { 10.f, 100.f, 250.f })
+        {
+            for (float ratio : { .75f, 1.f, 2.f, 4.5f })
+            {
+                const float run = walk * ratio;
+                for (float speed : { 0.f, 5.f, 100.f, 5000.f })
+                {
+                    // Native playback caps its animation clock at 10x, then
+                    // restores excess world speed through its movement scale.
+                    const float nativeClock = std::min(10.f, speed / walk);
+                    const float nativeScale = std::max(1.f, speed / walk / 10.f);
+                    const float expected = run * nativeClock * nativeScale;
+                    const float restored = speed * EldenCombat::creatureRunSpeedMultiplier(walk, run);
+                    check(std::abs(restored - expected) <= std::max(1e-4f, expected * 1e-6f),
+                        "imported creature running differs from native walk-calibrated root motion");
+                    for (float amount : { .25f, 1.f })
+                        for (int direction = 0; direction < 16; ++direction)
+                        {
+                            const auto movement = heading(direction * Pi / 8.f, amount);
+                            const float actual = EldenCombat::movementSpeed(restored, magnitude(movement),
+                                std::abs(movement.mX) > std::abs(movement.mY), true);
+                            check(std::abs(actual - restored * amount)
+                                    <= std::max(1e-4f, restored * 1e-6f),
+                                "restored creature pace depends on direction or ignores input magnitude");
+                        }
+                }
+            }
+        }
+        for (float invalid : { -1.f, 0.f, 1.f, std::numeric_limits<float>::infinity(),
+                 std::numeric_limits<float>::quiet_NaN() })
+        {
+            close(EldenCombat::creatureRunSpeedMultiplier(invalid, 300.f), 1.f,
+                "invalid walk velocity changed imported creature speed");
+            close(EldenCombat::creatureRunSpeedMultiplier(100.f, invalid), 1.f,
+                "missing run fallback changed imported creature speed");
+        }
     }
 
     void smoothTurns()
@@ -404,7 +445,20 @@ int main()
 {
     try
     {
+        for (const unsigned int base : { 20000u, 20100u, 22100u, 320000u, 320100u })
+            for (unsigned int direction = 0; direction < 4; ++direction)
+            {
+                const auto reflected = EldenCombat::mirroredLocomotionId(base + direction);
+                check(reflected == base + (direction < 2 ? direction : 5 - direction),
+                    "left-hand locomotion did not exchange only left/right strafes");
+                check(EldenCombat::mirroredLocomotionId(reflected) == base + direction,
+                    "locomotion reflection was not reversible");
+            }
+        for (const unsigned int id : { 0u, 100u, 20200u, 300000u, 300100u, 202040u })
+            check(EldenCombat::mirroredLocomotionId(id) == id,
+                "left-hand locomotion changed an idle/sprint/airborne action");
         directionalSpeed();
+        creatureRunningPace();
         smoothTurns();
         startsStopsAndSettings();
         poseFollowsTravel();

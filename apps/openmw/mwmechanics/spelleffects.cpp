@@ -1223,6 +1223,14 @@ namespace MWMechanics
     MagicApplicationResult applyMagicEffect(const MWWorld::Ptr& target, const MWWorld::Ptr& caster,
         ActiveSpells::ActiveSpellParams& spellParams, ESM::ActiveEffect& effect, float dt, bool playNonLooping)
     {
+        if (Settings::game().mDisableParalysis && effect.mEffectId == ESM::MagicEffect::Paralyze)
+        {
+            effect.mDuration = 0.f;
+            effect.mTimeLeft = 0.f;
+            // End existing effects through the native cleanup path, including constant effects.
+            onMagicEffectRemoved(target, spellParams, effect);
+            return { MagicApplicationResult::Type::REMOVED, false, false };
+        }
         const auto world = MWBase::Environment::get().getWorld();
         int32_t applied = ESM::ActiveEffect::Flag_Remove;
         bool receivedMagicDamage = false;

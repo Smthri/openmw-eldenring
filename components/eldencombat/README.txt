@@ -35,18 +35,54 @@ Implemented mechanisms:
   - Imported jump attacks transition to full/short landing recovery on ground
     contact, retaining prepaid stamina and preventing repeated airborne hits.
   - Left-hand and paired chains with independent multi-hit windows and costs.
+    Primary light uses the right weapon; the guard/off-hand button selects
+    the paired moveset for matching weapons. Each has its own cancel windows.
   - Right- and left-hand two-handed grips, including the shield attack profile.
+  - Authored grip-change phases with delayed hand selection and buffered recovery.
+  - Spear shield pokes with an independent blocking left arm and one right-hand hit.
   - Release-to-roll/hold-to-sprint, load-dependent dodge displacement and i-frames.
   - Delayed frontal guarding, two-handed guarding, guard breaks and counters.
   - Per-hit stamina payments, out-of-combat free sprinting, exhaustion/rearming,
     reduced guard regeneration and hit-stop.
   - Ground hit reactions and the dummy's accumulated stance damage/recovery.
 
-Critical vulnerability after stance/guard breaks and critical attacks are
-OpenMW integration extensions. Parrying and weapon skills are absent from the
-source recreation and are not implemented here. Physics, target selection,
+Critical vulnerability after stance/guard breaks, critical attacks and the
+curated boss melee arts are OpenMW integration extensions. Parrying and Elden
+Ring weapon skills are absent from the source recreation. bossarts.hpp adds
+interruptible tells, one swing contact and cooldowns; the engine applies
+native Morrowind spell effects/sounds without altering ordinary attack timings
+or charging stamina twice. Guile's Hunter's Thrust requests Action::SpearThrust
+from idle through the AI-only mSpearThrust button. It reuses the two-handed
+Spear Light1 definition at 1.6x speed with one contact and full recovery;
+pose, hit and root-motion clocks remain synchronized. Its 0.25s tell, 12s
+cooldown and 30 percent selection chance make it an occasional opener.
+Unsupported/native rigs keep Hunter's Rend. The boss art state is transient
+and owned per actor.
+Guarded ordinary one-handed chains enter Deflected, cancel remaining windows
+and queued inputs, and give native recoil ownership for an 18-frame recovery.
+GuardHit retains imported guard arm layers; Deflected does not. Two-handed,
+heavy/contextual swings and native creature attacks keep authored follow-through. Physics, target selection,
 actual weapon contact, health, equipment and animation are owned by OpenMW;
 the component receives engine decisions instead of embedding a second world.
+
+grip.hpp preserves the neighboring reference's common grip swaps: five frames
+of preparation, hand selection at frame three, then a seventeen-frame completion
+clip whose first seven frames lock actions. The adapter owns equipment and the
+selected hand; GripTransition only reports the apply event and source clip/clock.
+Input::mHandsBusy buffers attacks/dodges until recovery finishes and prevents
+guarding or sprinting while the hands change grip. Changes do not reset combat
+state or native stamina. Off-hand light attacks use mLeftSpeedMultiplier; paired
+and primary attacks retain the selected primary item's mSpeedMultiplier.
+
+Action::GuardThrust adapts the bank's one-handed Spear/GreatSpear Light1 pose and
+timing with a shield-only left-arm overlay; the supplied source has no dedicated
+shield-poke definition. Holding guard and pressing light with a shield and a
+one-handed right spear selects it. The attack retains the usual guard raise
+delay, frontal block checks and shield stamina loss, with one native thrust hit
+and the ordinary attack cost. A successful block preserves the committed thrust;
+guard break, rear/unblockable hits and other interruptions retain normal behavior.
+Releasing guard lowers defense even during hit-stop. The shield poke has no
+authored forward root movement; ordinary two-handed spear attacks remain separate.
 
 Adapter contract:
   1. Configure equipment/load/guard eligibility and setVitals(current,max).
@@ -97,6 +133,8 @@ Adapter contract:
      until the next update, even if the action ended. markHit() consumes exactly
      one window; loop to handle multiple windows crossed by the same update.
      A missed live window can be queried again next update until it expires.
+     Call deferHit() on a miss and continue through the other windows in this
+     update, so a short right weapon cannot prevent a longer left weapon hitting.
      attack() reports the current action's first-hit metadata for animation use;
      activeHit() supplies the actual hit's sequence, index and damage metadata.
   5. receiveHit() reports evade/block/guard break/reaction before engine health
@@ -104,7 +142,10 @@ Adapter contract:
      in native health units and is never applied by this component. The adapter
      checks target reach and sets mCriticalAvailable before requesting a critical.
      consumeCritical() reserves the target's vulnerability exactly once.
-     Paired fallback hits alternate hands; imported hits may set mLeftHand.
+     Paired fallback hits alternate hands. Imported hits set mLeftHand and
+     mHasHandAssignment so repeated or reversed hand order stays authoritative.
+     Two-handed contact ownership always uses the selected inventory item,
+     even when the authored fist/claw animation strikes with the other hand.
      For a left-handed two-hand grip, configure mWeaponClass/mSpeedMultiplier
      from the selected left item and set both mTwoHanded and mTwoHandedLeft.
      Primary attacks and guard counters then report left-hand hit ownership.
@@ -125,6 +166,30 @@ playback falls back to the native clips.
 The engine adapter also leaves Almalexia on native poses and movement outside
 combat so her Tribunal speech retains its authored idle pacing; her AI combat
 sequence enables the controller and imported poses for the duel.
+
+Guile's validated Hircine rig selects WeaponClass::Spear and two-handed input
+despite having no equipment inventory. This uses the imported Short Spear
+actions at source speed; the native creature still owns damage and loot.
+Its embedded spear attachment must also validate before humanoid posing is
+enabled. The engine pose wrapper skips equipment lookup for creatures without
+an inventory, including Guile. Incompatible rigs/assets keep native attack timing. The other Hircine
+forms retain native animation. The renderer places the frontmost palm 40 percent up
+from the butt using each native mesh's shaft and both displayed palms. A rear
+palm floor at 4 percent keeps both hands on short shafts during wide poses,
+allowing only the necessary forward adjustment. Native attachments are restored
+when imported animation ends. Admission accepts both r/hircine.nif and the
+r/xhircine.nif variant selected by the native animation loader. The six curated
+humanoid creature model families also accept their exact animated variants.
+Imported creature movement retains the native forward-gait/walk root velocity
+ratio (Guile runs about 4.87 times his walk speed), also driving the imported
+stride clock. NPC movement and native flight/swimming/sneak stay unchanged.
+These changes require no new animation bank.
+
+The independent Game setting "disable paralysis" sets paralysis effect duration
+and remaining time to zero for all actors, including existing and constant
+effects. Native effect cleanup ends only paralysis; other effects in a mixed
+spell remain intact. The setting defaults to false; ordinary paralysis checks
+are unchanged and expired effects do not resume when it is turned off.
 
 spellcasting.hpp selects imported gestures from a captured native range and
 semantic effect classification: restoration, area restoration, support, spectral,

@@ -7,8 +7,9 @@ files contain data from the game; keep the output local. This importer does not
 download assets or execute Rust/Python expressions from its input.
 
 The adapter uses canonical Front dodges/reactions and the Stand jump. Jump
-attacks combine the airborne hit window/cost with their landing damage metadata;
-touchdown switches to the authored full or short landing animation and recovery.
+attacks preserve each airborne contact's window, cost, damage and weapon hand;
+older tables use their first airborne window with landing damage metadata.
+Touchdown switches to the authored full or short landing animation and recovery.
 Missing airborne or landing damage data preserves the existing jump fallback.
 It imports clip names, weapon stance categories, timing,
 cancel windows, invincibility, per-hit motion values/costs and sampled cumulative
@@ -219,7 +220,7 @@ class Definition:
     two_hand: bool | None
     load: str | None
     values: dict[str, float]
-    hits: list[tuple[float, ...]]
+    hits: list[tuple[float | bool, ...]]
     root_motion: list[tuple[float, ...]]
     animation: str
     stance: tuple[int, int] | None = None
@@ -233,6 +234,27 @@ def animation_name(fields: dict) -> str:
     if match is None:
         raise ImportError("source must be a baked animation identifier, for example a000_027000")
     return f"a{int(match[1]):03d}_{match[2]}"
+
+
+def convert_hits(raw_hits, action: str, duration: float) -> list[tuple[float | bool, ...]]:
+    if not isinstance(raw_hits, list):
+        raise ImportError(f"{action}: hits must be an array")
+    if len(raw_hits) > MAX_HITS:
+        raise ImportError(f"{action}: {len(raw_hits)} hits exceed the adapter capacity of {MAX_HITS}; no hits were discarded")
+    hits = []
+    for hit in raw_hits:
+        if not isinstance(hit, dict) or hit.get("_type") != "Hit":
+            raise ImportError(f"{action}: expected Hit literal")
+        begin, end = number(hit, "from"), number(hit, "to")
+        if not begin < end <= duration:
+            raise ImportError(f"{action}: hit window lies outside the animation")
+        left = hit.get("left_hand", False)
+        if not isinstance(left, bool):
+            raise ImportError(f"{action}: left_hand must be a boolean")
+        guard = number(hit, "guard_damage")
+        hits.append((begin, end, number(hit, "mv"), number(hit, "stamina"), guard * 5., guard,
+                     number(hit, "stop") * 0.5, left, "left_hand" in hit))
+    return hits
 
 
 def convert(action: str, fields: dict, weapon: str | None = None,
@@ -261,30 +283,26 @@ def convert(action: str, fields: dict, weapon: str | None = None,
     samples = [numeric_tuple(sample, 3, "motion sample") for sample in motion]
     first, last = samples[0], samples[-1]
     values["mDistance"] = math.hypot(last[0] - first[0], last[2] - first[2])
-    raw_hits = fields.get("hits")
-    if not isinstance(raw_hits, list):
-        raise ImportError(f"{action}: hits must be an array")
-    if len(raw_hits) > MAX_HITS:
-        raise ImportError(f"{action}: {len(raw_hits)} hits exceed the adapter capacity of {MAX_HITS}; no hits were discarded")
-    hits = []
-    for hit in raw_hits:
-        if not isinstance(hit, dict) or hit.get("_type") != "Hit":
-            raise ImportError(f"{action}: expected Hit literal")
-        begin, end = number(hit, "from"), number(hit, "to")
-        if not begin < end <= values["mDuration"]:
-            raise ImportError(f"{action}: hit window lies outside the animation")
-        guard = number(hit, "guard_damage")
-        hits.append((begin, end, number(hit, "mv"), number(hit, "stamina"), guard * 5., guard, number(hit, "stop") * 0.5))
+    hits = convert_hits(fields.get("hits"), action, values["mDuration"])
     return Definition(action, weapon, two_hand, load, values, hits, samples, animation_name(fields))
 
 
 def merge_air_attack(landing: Definition, airborne: dict, landing_short: Definition | None = None) -> Definition:
-    """Keep the source's separate air and landing clocks, sharing the hit's damage data."""
+    """Keep separate air/landing clocks and every authored airborne contact."""
     begin, end = number(airborne, "from"), number(airborne, "to")
     if begin >= end:
         raise ImportError("airborne hit window must have from < to")
     cost = number(airborne, "stamina")
     hit = landing.hits[0]
+    if "hits" in airborne:
+        hits = convert_hits(airborne["hits"], landing.action, math.inf)
+        if not hits:
+            raise ImportError("airborne hits must contain at least one contact")
+        begin, end = min(hit[0] for hit in hits), max(hit[1] for hit in hits)
+    else:
+        # Older reference files carry only one airborne contact and borrow its
+        # damage metadata from the first landing contact.
+        hits = [(begin, end, hit[2], cost, hit[4], hit[5], hit[6], hit[7], hit[8])]
     values = dict(landing.values)
     values["mDuration"] = max(values["mDuration"], end + 1.)
     # An airborne attack starts its own clock when pressed. Never let the
@@ -297,9 +315,8 @@ def merge_air_attack(landing: Definition, airborne: dict, landing_short: Definit
     values["mInvincibleFrom"] = values["mInvincibleTo"] = 0.
     values["mChargeFrom"] = values["mChargeTo"] = 0.
     values["mStartCost"] = values["mDistance"] = 0.
-    # The controller preserves this hit's payment/connection across touchdown.
+    # The controller preserves each hit's payment/connection across touchdown.
     # Landing root motion starts with the landing phase, never with the air clock.
-    hits = [(begin, end, hit[2], cost, hit[4], hit[5], hit[6])]
     return Definition(landing.action, landing.weapon, landing.two_hand, landing.load, values, hits, [],
                       animation_name(airborne), landing.stance, landing, landing_short)
 
@@ -460,7 +477,8 @@ def generate_header(definitions: list[Definition]) -> str:
         for key, value in definition.values.items():
             lines.append(f"            result.{key} = {cpp_float(value)};")
         for hit_index, hit in enumerate(definition.hits):
-            lines.append(f"            result.mHits[{hit_index}] = {{ " + ", ".join(map(cpp_float, hit)) + " };")
+            fields = [*(cpp_float(value) for value in hit[:7]), *(str(value).lower() for value in hit[7:])]
+            lines.append(f"            result.mHits[{hit_index}] = {{ " + ", ".join(fields) + " };")
         lines.append(f"            result.mHitCount = {len(definition.hits)};")
         if definition.root_motion:
             lines.append("            static constexpr std::array<float, 3> rootMotion[] = {")
@@ -605,6 +623,42 @@ class FixtureTests(unittest.TestCase):
         definitions = parse_source(self.source(fixture_literal(MAX_HITS)))
         self.assertEqual(len(definitions[1].hits), MAX_HITS)
         self.assertIn("result.mHits[31]", generate_header(definitions))
+
+    def test_explicit_hands_preserve_non_alternating_order(self):
+        fields = RustLiteral(fixture_literal(3)).parse()
+        for hit, left in zip(fields["hits"], (True, True, False)):
+            hit["left_hand"] = left
+        definition = convert("PairedLight1", fields, "Dagger", False)
+        self.assertEqual([hit[7:] for hit in definition.hits], [(True, True), (True, True), (False, True)])
+        header = generate_header([definition])
+        self.assertEqual(header.count(", true, true };"), 2)
+        self.assertEqual(header.count(", false, true };"), 1)
+        legacy = convert("PairedLight1", RustLiteral(fixture_literal(2)).parse())
+        self.assertEqual([hit[7:] for hit in legacy.hits], [(False, False), (False, False)])
+        fields["hits"][0]["left_hand"] = 1
+        with self.assertRaisesRegex(ImportError, "left_hand must be a boolean"):
+            convert("PairedLight1", fields)
+
+    def test_airborne_contacts_keep_both_hands_and_own_damage(self):
+        landing = convert("PairedJump", RustLiteral(fixture_literal(2)).parse())
+        airborne = RustLiteral(fixture_air_literal()).parse()
+        hits = RustLiteral(fixture_literal(3)).parse()["hits"]
+        for index, (hit, left) in enumerate(zip(hits, (True, False, True))):
+            hit.update({"from": 5. + index * 3, "to": 8. + index * 3, "left_hand": left,
+                        "mv": 0.7 + index * 0.1, "stamina": 4. + index})
+        airborne["hits"] = hits
+        definition = merge_air_attack(landing, airborne)
+        self.assertEqual([hit[7:] for hit in definition.hits], [(True, True), (False, True), (True, True)])
+        self.assertEqual([(hit[0], hit[1], hit[3]) for hit in definition.hits],
+                         [(5., 8., 4.), (8., 11., 5.), (11., 14., 6.)])
+        self.assertEqual([hit[2] for hit in definition.hits], [hit["mv"] for hit in hits])
+        self.assertGreaterEqual(definition.values["mCancelMove"], 14.)
+        airborne["hits"] = []
+        with self.assertRaisesRegex(ImportError, "at least one contact"):
+            merge_air_attack(landing, airborne)
+        airborne["hits"] = hits * MAX_HITS
+        with self.assertRaisesRegex(ImportError, "capacity"):
+            merge_air_attack(landing, airborne)
 
     def test_airborne_light_heavy_and_paired_attacks(self):
         diagnostics = []

@@ -102,8 +102,9 @@ namespace MWClass
         else
         {
             slots.push_back(int(MWWorld::InventoryStore::Slot_CarriedRight));
-            if (Settings::game().mEldenRingCombat && weapClass == ESM::WeaponType::Melee
-                && !(MWMechanics::getWeaponType(ref->mBase->mData.mType)->mFlags & ESM::WeaponType::TwoHanded))
+            // Elden grips are selected independently of Morrowind's weapon type.
+            // Spears, greatswords and other heavy melee weapons can occupy either hand.
+            if (Settings::game().mEldenRingCombat && weapClass == ESM::WeaponType::Melee)
                 slots.push_back(int(MWWorld::InventoryStore::Slot_CarriedLeft));
         }
 

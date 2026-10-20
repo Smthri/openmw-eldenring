@@ -3,9 +3,12 @@
 
 import importlib.util
 from pathlib import Path
+import re
 import struct
 import tempfile
 import unittest
+
+from eldenring_animation_fixtures import paired_timings
 
 
 spec = importlib.util.spec_from_file_location(
@@ -26,7 +29,8 @@ class AnimationInstallation(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.header = self.root / "imported_timings.hpp"
         self.header.write_text('result.mAnimation = "a001_003000";\nreturn twoHanded ? 10u : 0u;\n'
-                               'return twoHanded ? 12u : 2u;\nreturn twoHanded ? 13u : 3u;', encoding="utf-8")
+                               'return twoHanded ? 12u : 2u;\nreturn twoHanded ? 13u : 3u;\n'
+                               + paired_timings(installer.PAIRED_ACTIONS), encoding="utf-8")
         self.clips = installer.required_clips(self.header)
         self.source = self.root / "player_anims.bin"
         self.package = self.root / "пакет OpenMW"
@@ -50,7 +54,7 @@ class AnimationInstallation(unittest.TestCase):
         return data
 
     def validate(self):
-        return installer.validate(self.source, self.header)
+        return installer.validate(self.source, self.header, require_paired=True)
 
     def install(self):
         return installer.install(self.source, self.package, self.validate(), self.backups)
@@ -106,6 +110,71 @@ class AnimationInstallation(unittest.TestCase):
             self.install()
         self.assertEqual(self.destination.read_bytes(), original)
         self.assertFalse(self.backups.exists())
+
+    def test_missing_grip_phase_preserves_installed_bank(self):
+        self.install()
+        original = self.destination.read_bytes()
+        for animation in (29010, 29020, 29040, 29050, 29060, 29080):
+            name = f"a000_{animation:06}"
+            with self.subTest(clip=name):
+                self.assertIn(name, self.clips)
+                self.source.write_bytes(self.bank(clips=self.clips - {name}))
+                with self.assertRaisesRegex(ValueError, "missing 1 required clips"):
+                    self.install()
+                self.assertEqual(self.destination.read_bytes(), original)
+                self.assertFalse(self.backups.exists())
+
+    def test_missing_paired_chain_context_or_landing_preserves_installed_bank(self):
+        self.install()
+        original = self.destination.read_bytes()
+        for animation in (34000, 34010, 34020, 34030, 34200, 34300, 34400, 34530, 34570, 34571):
+            name = f"a023_{animation:06}"
+            with self.subTest(clip=name):
+                self.assertIn(name, self.clips)
+                self.source.write_bytes(self.bank(clips=self.clips - {name}))
+                with self.assertRaisesRegex(ValueError, "missing 1 required clips"):
+                    self.install()
+                self.assertEqual(self.destination.read_bytes(), original)
+                self.assertFalse(self.backups.exists())
+
+    def test_stale_paired_hit_hands_preserve_installed_bank(self):
+        self.install()
+        original = self.destination.read_bytes()
+        header = self.header.read_text()
+        for replacement in ("0.02f", "0.02f, false", "0.02f, false, false"):
+            with self.subTest(fields=replacement):
+                self.header.write_text(header.replace("0.02f, false, true", replacement))
+                with self.assertRaisesRegex(ValueError, "authored hand metadata"):
+                    self.install()
+                self.assertEqual(self.destination.read_bytes(), original)
+                self.assertFalse(self.backups.exists())
+
+    def test_stale_paired_landing_hands_are_rejected(self):
+        header = self.header.read_text()
+        landing = re.search(r'inline std::optional<ActionDef> definition\d+Landing\([^)]*\).*?return result;',
+                            header, flags=re.DOTALL)[0]
+        self.header.write_text(header.replace(landing, landing.replace("0.02f, false, true", "0.02f")))
+        with self.assertRaisesRegex(ValueError, "Landing hit 0 lacks authored hand metadata"):
+            self.validate()
+
+    def test_missing_paired_dispatch_or_landing_is_rejected(self):
+        original = self.header.read_text()
+        for old, new in (("Action::PairedLight4", "Action::Light4"),
+                         ("WeaponClass::CurvedGreatsword", "WeaponClass::Unused")):
+            with self.subTest(missing=old):
+                self.header.write_text(original.replace(old, new))
+                with self.assertRaisesRegex(ValueError, "missing .* paired actions"):
+                    self.validate()
+        self.header.write_text(original.replace("result.mLandingShort =", "result.mUnused ="))
+        with self.assertRaisesRegex(ValueError, "lacks jump landing phases"):
+            self.validate()
+
+    def test_paired_validation_reports_authored_contacts_and_clips(self):
+        report = self.validate()
+        self.assertEqual(report["paired_actions"], len(installer.PAIRED_ACTIONS))
+        self.assertGreater(report["paired_hit_windows"], report["paired_actions"] * 2)
+        self.assertIn("a023_034000", report["paired_clips"])
+        self.assertIn("a023_034571", report["paired_clips"])
 
     def test_missing_one_handed_gait_preserves_installed_bank(self):
         self.install()

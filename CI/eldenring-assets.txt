@@ -1,13 +1,13 @@
 Elden Ring asset extraction on Linux/WSL
 
 The supplied Steam installation is packed. The selective reader extracts only
-the eleven player animation/event archives and regulation parameters needed by
+the player animation/event archives and regulation parameters needed by
 ELDEN-RING-Combat-Rewrite. It reads the installed game without unpacking into,
 patching, or otherwise changing that installation. Generated game data stays
 in the recreation's ignored er-files/, src/sim/extracted.rs, assets/*.bin and
 OpenMW's ignored components/eldencombat/imported_timings.hpp.
 
-Run from the openmw directory with Python 3.10 or newer. The Python environment
+Run from the openmw-eldenring checkout with Python 3.10 or newer. The Python environment
 needs cryptography and zstandard. CMake, Ninja, a native x86-64 C++ compiler,
 and Git are needed to prepare the Linux reader. CI/eldenring-build-env.sh is
 used automatically if the workspace's local validation toolchain exists.
@@ -46,39 +46,37 @@ used automatically if the workspace's local validation toolchain exists.
 
 The unpacker records source-header and regulation SHA256 digests plus output
 sizes/digests in er-files/extraction-manifest.json. This manifest is local.
-Audio extraction is optional; no sound banks were extracted in this run.
+Audio extraction is optional; use scripts/import_eldenring_music.py and
+scripts/import_eldenring_sounds.py. Existing local outputs are under
+build-eldenring-assets/music/eldenring and sound/eldenring/dodge.
 
-Validated local outputs, 2026-10-14:
-  Eleven player .anibnd.dcx archives and 194 regulation .param files.
-  extract.py generated 1,188 ground and 122 airborne source attacks.
-  bake_anims.py generated player_anims.bin containing 1,485 skeletal clips.
-  importer generated 1,080 OpenMW action definitions, including shield attacks.
+Current workspace outputs (2026-10-19):
+  player_anims.bin: 1,556 clips / 95,374 frames / 53,822,434 bytes.
+  Imported timings: 1,085 OpenMW action definitions, including shield attacks.
+  Paired attacks: 175 actions across 23 weapon classes, retaining source hands
+  and every airborne hit. Seven Curved Greatsword clips follow authored TAE
+  imports into the Greatsword category; all previous clip records are unchanged.
+  Audio: 28 music recordings, 15 combat recordings and their manifests.
+  The bank includes 14 incantation phases, darts, one-handed locomotion and
+  29 longbow action/carry clips and six right/left grip-change phases.
+  Native OpenMW still owns spell/projectile release,
+  damage, costs and effects.
 
 The generator omits special-state alternate attack hitboxes (including the
 a037 StateInfo=187 variants) so ordinary moves do not count both variants as
-separate hits. Two extraction regression fixtures cover conditional variants
-and legitimate simultaneous/paired hits. Nine importer fixture groups cover
-safe parsing, costs/windows/root motion, airborne attacks and shield grips.
+separate hits. Extraction fixtures cover conditional variants, simultaneous
+hits, non-alternating hand order, complete airborne contacts and cross-category
+TAE imports (the import id follows an eight-byte file offset). Fourteen importer
+fixtures cover parsing, costs/windows/root motion, explicit and legacy hand
+metadata, airborne contacts and shield grips. The local source comparison is
+build-eldencombat/dual-wield-20261019/asset-coverage.json: 1,479 hit comparisons,
+123 airborne sequences with matching landing hand order, and seven new clips
+decoded directly from their neighboring HKX source. These are data checks,
+not rendered or actual-engine gameplay evidence.
 
 The imported timing table and baked animation bank are consumed by OpenMW.
 The renderer retargets the source poses onto Morrowind NPC skeletons. Generated
 data is not part of the source licenses and remains local to the user's installation.
-
-Seal / incantation addition, 2026-10-14:
-  chr/c0000_a9x.anibnd.dcx contains the casting HKX files. The common c0000
-  archive already supplies their TAE events. Re-run step 2 to unpack the extra
-  archive, then bake_anims.py (or use --generate) to include all six phases:
-    Self:   Urgent Heal  a433_045000 + a433_045010
-    Touch:  Catch Flame  a506_045000 + a506_045010
-    Target: Flame Sling a417_045000 + a417_045011 (uncharged)
-  The native spell release is aligned to the corresponding TAE release event.
-  Spell damage, costs and effects continue to come from Morrowind.
-  The bank contains 92,413 frames; all 1,479 earlier clip records remain
-  byte-identical. Flame Sling's authored seven-frame entrance blend is baked
-  into its continuation; all three release poses retain their exact samples.
-  Extraction/geometry evidence is recorded locally in
-  er-files/spell-animation-validation.json. Source-bank SHA256:
-  025408c3bc634a08edf56b265a71b570df2123b4b90be2bddaf42bb1d2c9047f
 
 Source pins and licenses are preserved in build-tools-local/elden-assets:
   linoodle, McSimp, 90b8d825f7f89272f03f52b5d1db4708e07eb83f, MIT.
