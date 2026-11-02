@@ -183,6 +183,8 @@ namespace MWMechanics
 
             mDead = true;
             mEldenCombat.setDead(true);
+            mEldenBossArt.reset();
+            mEldenGripTransition.reset();
             mEldenCombatInput = {};
             mEldenCombatActive = false;
 
@@ -270,6 +272,8 @@ namespace MWMechanics
             mDead = false;
             mDeathAnimationFinished = false;
             mEldenCombat.reset();
+            mEldenBossArt.reset();
+            mEldenGripTransition.reset();
             mEldenCombatInput = {};
             mEldenCombatActive = false;
         }
@@ -542,6 +546,8 @@ namespace MWMechanics
         state.mLastHitObject = mLastHitObject;
         state.mLastHitAttemptObject = mLastHitAttemptObject;
         state.mRecalcDynamicStats = false;
+        state.mEldenTwoHanded = mEldenCombatInput.mTwoHanded;
+        state.mEldenTwoHandedLeft = mEldenCombatInput.mTwoHanded && mEldenCombatInput.mTwoHandedLeft;
         state.mDrawState = static_cast<int>(mDrawState);
         state.mLevel = mLevel;
         state.mDeathAnimation = mDeathAnimation;
@@ -565,7 +571,11 @@ namespace MWMechanics
     void CreatureStats::readState(const ESM::CreatureStats& state)
     {
         mEldenCombat.reset();
+        mEldenBossArt.reset();
+        mEldenGripTransition.reset();
         mEldenCombatInput = {};
+        mEldenCombatInput.mTwoHanded = state.mEldenTwoHanded;
+        mEldenCombatInput.mTwoHandedLeft = state.mEldenTwoHanded && state.mEldenTwoHandedLeft;
         mEldenCombatActive = false;
         if (!state.mMissingACDT)
         {

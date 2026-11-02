@@ -1,15 +1,21 @@
+#include <apps/openmw/mwmechanics/movementanimation.hpp>
 #include <apps/openmw/mwmechanics/obstacledirection.hpp>
+#include <components/eldencombat/locomotion.hpp>
 
 #include <array>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 
 namespace
 {
+    int checks = 0;
+
     void check(bool condition, const char* message)
     {
         if (!condition)
             throw std::runtime_error(message);
+        ++checks;
     }
 
     void repeatedObstruction()
@@ -61,6 +67,86 @@ namespace
         check(direction.advance(MWWorld::MovementDirectionFlag_Left), "changed animation capabilities ignored");
         check(direction.get().mX == -1.f && direction.get().mY == 0.f, "updated movement mask was ignored");
     }
+
+    enum class Gait
+    {
+        Idle,
+        Forward,
+        Back,
+        Left,
+        Right,
+        Turn,
+    };
+
+    constexpr std::array gaits{ Gait::Forward, Gait::Back, Gait::Left, Gait::Right };
+
+    Gait requestedGait(EldenCombat::PlanarMovement movement)
+    {
+        // CharacterController classifies the smoothed velocity, not the AI's
+        // input. Pure diagonal movement uses the forward/backward animation.
+        if (std::abs(movement.mX) > 2.f * std::abs(movement.mY))
+            return movement.mX < 0.f ? Gait::Left : Gait::Right;
+        return movement.mY < 0.f ? Gait::Back : Gait::Forward;
+    }
+
+    void nativeGaitSupport()
+    {
+        constexpr std::array directions{ MWWorld::MovementDirectionFlag_Forward,
+            MWWorld::MovementDirectionFlag_Back, MWWorld::MovementDirectionFlag_Left,
+            MWWorld::MovementDirectionFlag_Right };
+        for (MWWorld::MovementDirectionFlags mask = 0; mask < 16; ++mask)
+        {
+            for (std::size_t i = 0; i < gaits.size(); ++i)
+            {
+                const auto actual = MWMechanics::nativeMovementAnimation(gaits[i], gaits, mask);
+                if (mask & directions[i])
+                    check(actual == gaits[i], "available native directional gait was replaced");
+                else if (mask & MWWorld::MovementDirectionFlag_Forward)
+                    check(actual == Gait::Forward, "missing directional gait did not fall back to native forward");
+                else
+                    check(actual == gaits[i], "gait fallback invented a missing forward animation");
+            }
+            for (const auto other : { Gait::Idle, Gait::Turn })
+                check(MWMechanics::nativeMovementAnimation(other, gaits, mask) == other,
+                    "native gait fallback replaced an idle or turning animation");
+        }
+    }
+
+    void forwardOnlySmoothTurns()
+    {
+        constexpr float pi = 3.14159265358979323846f;
+        int missingRequests = 0;
+        // A nearby path corner can directly request a sideways gait. Even a
+        // forward-only input clamp would miss the sideways/backwards velocity
+        // retained by world-space smoothing during a sharp path change.
+        for (const int fps : { 30, 60, 144 })
+        {
+            for (const float speed : { .4f, 1.f })
+            {
+                for (const float start : { -pi, -.5f * pi, 0.f, .5f * pi })
+                {
+                    for (const float target : { -80.f, -45.f, 0.f, 45.f, 80.f })
+                    {
+                        EldenCombat::PlanarMovement current{ speed * std::sin(start), speed * std::cos(start) };
+                        const EldenCombat::PlanarMovement desired{
+                            speed * std::sin(target * pi / 180.f), speed * std::cos(target * pi / 180.f) };
+                        for (int frame = 0; frame < fps / 2; ++frame)
+                        {
+                            current = EldenCombat::smoothMovement(current, desired, 1.f / fps, true, false, 1.f / 6.f);
+                            const auto requested = requestedGait(current);
+                            missingRequests += requested != Gait::Forward;
+                            check(MWMechanics::nativeMovementAnimation(
+                                      requested, gaits, MWWorld::MovementDirectionFlag_Forward) == Gait::Forward,
+                                "forward-only creature stopped on a smoothed path corner");
+                            check(MWMechanics::nativeMovementAnimation(requested, gaits, 15) == requested,
+                                "fully supported humanoid gait changed during path steering");
+                        }
+                    }
+                }
+            }
+        }
+        check(missingRequests > 100, "path-corner regression did not exercise missing sideways/backward gaits");
+    }
 }
 
 int main()
@@ -70,7 +156,9 @@ int main()
         repeatedObstruction();
         forwardOnlyCreatures();
         supportedDirections();
-        std::cout << "Navigation regression tests passed\n";
+        nativeGaitSupport();
+        forwardOnlySmoothTurns();
+        std::cout << "Navigation regression tests passed: " << checks << " assertions\n";
     }
     catch (const std::exception& error)
     {

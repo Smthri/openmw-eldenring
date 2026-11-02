@@ -27,6 +27,9 @@ void doLighting(vec2 screenCoord, vec3 viewPos, vec3 viewNormal, float shininess
     diffuseLight *= shadowing;
     specularLight *= shadowing;
 
+    if (!pointLightingEnabled)
+        return;
+
 #if @lightingMethodClustered
     LightGrid grid = lightGrid[getClusterTileIndex(screenRes, gridSize, near, screenCoord, viewPos.z)];
     for (uint i = 0u; i < grid.count; ++i) {
@@ -54,6 +57,9 @@ vec3 doSpecularLighting(vec2 screenCoord, vec3 viewPos, vec3 viewNormal) {
     vec3 specular = vec3(0.0);
     vec3 viewDir = normalize(viewPos);
     float shininess = 50.0;
+
+    if (!pointLightingEnabled)
+        return specular;
 
     LightGrid grid = lightGrid[getClusterTileIndex(screenRes, gridSize, near, screenCoord, viewPos.z)];
     for (uint i = 0u; i < grid.count; ++i) {

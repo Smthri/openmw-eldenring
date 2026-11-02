@@ -33,6 +33,8 @@ namespace EldenCombat
         Button mGuard;
         Button mJump;
         Button mCritical;
+        // One-shot AI boss request; never selected by ordinary light/heavy input.
+        Button mSpearThrust;
         // Actor-local horizontal direction: positive X right, positive Y forward.
         float mMoveX = 0.f;
         float mMoveY = 0.f;
@@ -42,17 +44,25 @@ namespace EldenCombat
         bool mSprint = false;
         bool mInCombat = false;
         bool mGrounded = true;
+        // Controlled levitation is distinct from jumping/falling. Keep native
+        // ground contact truthful; flight permits melee but no ground movement.
+        bool mFlying = false;
         bool mCrouching = false;
         bool mLockedOn = false;
         bool mTwoHanded = false;
         // Two-handing the left weapon routes primary attacks to that hand.
         bool mTwoHandedLeft = false;
+        // Grip swap recovery buffers requests until both hands are available.
+        bool mHandsBusy = false;
         // Set by the world adapter after checking the target's vulnerability and reach.
         bool mCriticalAvailable = false;
         // Tactical AiCombat owns these buttons instead of the legacy attack-button adapter.
         bool mAIControlled = false;
 
         void clearEdges();
+        // Input cancellation and cell transitions release controls, while the
+        // selected armament grip persists until equipment or the player changes it.
+        void resetKeepingGrip();
     };
 
     enum class Load
@@ -128,11 +138,14 @@ namespace EldenCombat
         PairedRoll,
         PairedBackstep,
         PairedJump,
+        SpearThrust,
+        GuardThrust,
         Roll,
         CrouchRoll,
         Backstep,
         Jump,
         GuardHit,
+        Deflected,
         GuardBreak,
         HurtSmall,
         HurtMiddle,
@@ -141,6 +154,29 @@ namespace EldenCombat
         StanceBreak,
         Critical,
         Dead,
+    };
+
+    // Native actor statistics, separate from stance-break/critical vulnerability.
+    // Health is the modified maximum, not current health; injury does not remove poise.
+    struct PoiseStats
+    {
+        float mEndurance = 0.f;
+        float mStrength = 0.f;
+        float mArmorRating = 0.f;
+        float mHealth = 0.f;
+        float mLevel = 0.f;
+        bool mCreature = false;
+    };
+
+    float poiseFromStats(const PoiseStats& stats);
+
+    // Native creature text-key timing, in 30-fps frames relative to the clip's
+    // start. The engine selects the group and owns its visual playback.
+    struct NativeAttackTiming
+    {
+        std::string mAnimation;
+        float mDuration = 0.f;
+        float mHitFrame = 0.f;
     };
 
     struct Config
@@ -154,14 +190,27 @@ namespace EldenCombat
         bool mAllowStanceBreak = true;
         float mMaximumStamina = 100.f;
         float mMaximumStance = 60.f;
+        // Zero preserves the original every-hit stagger. The engine enables
+        // stat-based poise for enemies; absorbing a reaction never absorbs damage.
+        float mMaximumPoise = 0.f;
+        float mPoiseRecoveryDelay = 2.5f;
         // Estimates from the upstream simulation, in the normalized 100-point stamina scale.
         float mStaminaRegen = 45.f;
         float mGuardRegenMultiplier = 0.5f;
         float mSprintDrain = 11.f;
         float mGuardStaminaTaken = 0.55f;
         float mSpeedMultiplier = 1.f;
+        float mLeftSpeedMultiplier = 1.f;
+        // Horizontal roll distance in metres, selected from the current equipment-load tier.
+        // Captured in the action definition when a roll actually starts, including queued rolls.
+        bool mWeightBasedRollDistance = true;
+        float mLightRollDistance = 4.33f;
+        float mMediumRollDistance = 3.65f;
+        float mHeavyRollDistance = 3.31f;
+        float mDodgeStaminaMultiplier = 1.f;
         // Opt-in physical-hit protection; the world adapter enables this for the player only.
         float mPostHitProtectionSeconds = 0.f;
+        std::optional<NativeAttackTiming> mNativeAttack;
     };
 
     struct Hit
@@ -174,12 +223,18 @@ namespace EldenCombat
         float mGuardDamage = 1.f;
         float mHitStop = 0.05f;
         bool mLeftHand = false;
+        // Extracted contacts identify the striking weapon even when hits do
+        // not alternate hands. Legacy/fallback definitions use index parity.
+        bool mHasHandAssignment = false;
     };
 
     struct ActionDef
     {
         // Canonical baked ERAN clip name. Empty when using estimated timings.
         std::string mAnimation;
+        // Captured native group when its own text keys own attack timing.
+        // Empty for ordinary imported/fallback poses.
+        std::string mNativeAnimation;
         // Convert this action's clock back to the original clip's 30-fps frames.
         // Imported weapon timings are divided by the actor's weapon speed.
         float mAnimationSpeed = 1.f;
@@ -212,6 +267,9 @@ namespace EldenCombat
         std::shared_ptr<const ActionDef> mLandingShort;
     };
 
+    // Whether this weapon/grip has locally supplied action timings.
+    bool hasImportedWeaponMoveset(WeaponClass weapon, bool twoHanded);
+
     // Return the extracted weapon stance's idle, guard or locomotion clip name.
     // Without local imported data this selects the base category (a000).
     std::string stanceAnimation(WeaponClass weapon, bool twoHanded, unsigned int animationId);
@@ -229,6 +287,9 @@ namespace EldenCombat
         bool mTwoHanded = false;
         bool mLeftHand = false;
         bool mPaired = false;
+        // Preserve the native attack type when a slow update also starts the
+        // next group before the world consumes this contact.
+        std::string mNativeAnimation;
     };
 
     enum class HurtLevel
@@ -302,13 +363,20 @@ namespace EldenCombat
         float stamina() const { return mStamina; }
         float maximumStamina() const { return mConfig.mMaximumStamina; }
         float stance() const { return mStance; }
+        float poise() const { return mPoise; }
 
         Update update(const Input& input, float seconds);
         HitResult receiveHit(const Incoming& hit);
+        // Called for an actual blocked melee contact. Consumes every remaining
+        // window and the buffered chain before starting attacker recoil.
+        bool deflectHit(const Attack& hit);
         Attack attack() const;
         std::optional<Attack> activeHit() const;
         // A hit remains available throughout its window until world contact consumes it.
         void markHit();
+        // Try other contacts this update after a miss; this window can retry
+        // next update while live, without spending stamina a second time.
+        void deferHit();
         void applyHitStop(float seconds);
         float hitStopRemaining() const { return mHitStopSeconds; }
         // Called only after an unblocked physical hit; zero damage cannot grant protection.
@@ -336,6 +404,10 @@ namespace EldenCombat
         std::uint64_t sequence() const { return mSequence; }
 
         static bool isAttack(Action action);
+        // Threshold equality enters the heavier tier; invalid ratios conservatively select heavy.
+        static Load loadFromRatio(float ratio, float lightThreshold = 0.3f, float heavyThreshold = 0.7f);
+        // Validated configured distance; actionDefinition applies it only when the option is enabled.
+        static float rollDistance(const Config& config);
         static ActionDef actionDefinition(Action action, const Config& config, bool twoHanded = false);
         static std::array<float, 3> rootMotionAt(const ActionDef& definition, float frame);
 
@@ -348,6 +420,7 @@ namespace EldenCombat
             Dodge,
             Jump,
             Critical,
+            SpearThrust,
         };
 
         struct BufferedRequest
@@ -363,13 +436,14 @@ namespace EldenCombat
         Action nextLight() const;
         Action nextHeavy() const;
         Action nextLeft() const;
-        bool pairedWeaponsActive() const;
+        bool pairedWeaponsActive(bool twoHanded) const;
         bool leftButtonAttacks(const Input& input) const;
+        bool canGuardThrust(const Input& input) const;
         float cancelFrame(Request request) const;
         void spend(float normalizedCost, Update* result = nullptr);
         Attack makeAttack(std::size_t hitIndex) const;
         void collectHits(float previousFrame);
-        void landAttack(Update& result);
+        void landAttack(Update& result, bool preserveCrossedHits = false);
 
         Config mConfig;
         ActionDef mDef;
@@ -377,6 +451,8 @@ namespace EldenCombat
         float mFrame = 0.f;
         float mStamina = 100.f;
         float mStance = 60.f;
+        float mPoise = 0.f;
+        float mPoiseRecoveryRemaining = 0.f;
         float mGuardFrames = 0.f;
         float mGuardCounterFrames = 0.f;
         float mDodgeHoldFrames = 0.f;
@@ -396,11 +472,14 @@ namespace EldenCombat
         bool mTwoHanded = false;
         bool mTwoHandedLeft = false;
         bool mGrounded = true;
+        bool mMirrorAttackRootMotion = false;
+        bool mFlying = false;
         // A jump or jump attack may remain grounded while its accepted physics
         // pulse waits for a fixed step. Land it only after observing flight.
         bool mJumpWasAirborne = false;
         std::uint32_t mPaidHits = 0;
         std::uint32_t mLandedHits = 0;
+        std::uint32_t mDeferredHits = 0;
         std::uint64_t mSequence = 0;
         // Crossed windows remain available until the next update, even at low frame rates.
         std::array<Attack, MaximumHits * 2> mAvailableHits{};

@@ -21,9 +21,14 @@
 
 #include <array>
 
+#include <components/debug/debuglog.hpp>
+#include <components/eldencombat/nativeattack.hpp>
 #include <components/eldencombat/animations.hpp>
+#include <components/eldencombat/bow.hpp>
+#include <components/eldencombat/guard.hpp>
 #include <components/eldencombat/locomotion.hpp>
 #include <components/eldencombat/spellcasting.hpp>
+#include <components/eldencombat/throwing.hpp>
 #include <components/esm/records.hpp>
 #include <components/misc/mathutil.hpp>
 #include <components/misc/resourcehelpers.hpp>
@@ -58,9 +63,11 @@
 #include "combat.hpp"
 #include "eldencombat.hpp"
 #include "movement.hpp"
+#include "movementanimation.hpp"
 #include "npcstats.hpp"
 #include "security.hpp"
 #include "spellcasting.hpp"
+#include "spellutil.hpp"
 #include "weapontype.hpp"
 
 namespace
@@ -71,6 +78,54 @@ namespace
     bool eldenReactionAction(EldenCombat::Action action)
     {
         return action >= EldenCombat::Action::GuardHit && action <= EldenCombat::Action::StanceBreak;
+    }
+
+    EldenCombat::SpellGesture eldenSpellGesture(const ESM::MagicEffect& effect)
+    {
+        using Effect = ESM::MagicEffect;
+        using Gesture = EldenCombat::SpellGesture;
+        const auto& id = effect.mId;
+        if (id == Effect::FireDamage)
+            return Gesture::Fire;
+        if (id == Effect::FrostDamage)
+            return Gesture::Frost;
+        if (id == Effect::ShockDamage)
+            return Gesture::Shock;
+        if (effect.mData.mFlags & Effect::Harmful)
+            return Gesture::Spectral; // Neutral gesture for curses and non-elemental attacks.
+        if (id == Effect::RestoreHealth || id == Effect::RestoreMagicka || id == Effect::RestoreFatigue
+            || id == Effect::RestoreAttribute || id == Effect::RestoreSkill || id == Effect::CureCommonDisease
+            || id == Effect::CureBlightDisease || id == Effect::CureCorprusDisease || id == Effect::CurePoison
+            || id == Effect::CureParalyzation || id == Effect::RemoveCurse)
+            return Gesture::Restoration;
+        if (effect.mData.mSchool == ESM::Skill::Conjuration || effect.mData.mSchool == ESM::Skill::Illusion
+            || effect.mData.mSchool == ESM::Skill::Mysticism)
+            return Gesture::Spectral;
+        return Gesture::Support;
+    }
+
+    EldenCombat::SpellGesture eldenSpellGesture(
+        const std::vector<ESM::IndexedENAMstruct>& effects, const MWWorld::ESMStore& store)
+    {
+        // Keep the first effect's native range and choose the dominant effect
+        // within it. A minor secondary effect should not disguise the main cast.
+        EldenCombat::SpellGesture result = EldenCombat::SpellGesture::Generic;
+        float highestCost = -1.f;
+        for (const auto& effect : effects)
+        {
+            if (effect.mData.mRange != effects.front().mData.mRange)
+                continue;
+            const auto* magicEffect = store.get<ESM::MagicEffect>().find(effect.mData.mEffectID);
+            const float cost = MWMechanics::calcEffectCost(effect.mData, magicEffect);
+            if (cost > highestCost)
+            {
+                highestCost = cost;
+                result = eldenSpellGesture(*magicEffect);
+                if (result == EldenCombat::SpellGesture::Restoration && effect.mData.mArea > 0)
+                    result = EldenCombat::SpellGesture::RestorationArea;
+            }
+        }
+        return result;
     }
 
     std::string_view getBestAttack(const ESM::Weapon* weapon)
@@ -991,6 +1046,15 @@ namespace MWMechanics
                     bool useRelativeDuration = weaponClass == ESM::WeaponType::Ranged;
                     mAnimation->setWeaponGroup(mCurrentWeapon, useRelativeDuration);
                 }
+                else if (mWeaponTypeId == ESM::WeaponType::HandToHand)
+                {
+                    // A loaded actor may have only an off-hand weapon drawn.
+                    // Its attachment uses the same draw state as the right slot.
+                    const auto& inventory = cls.getInventoryStore(mPtr);
+                    const auto left = inventory.getSlot(MWWorld::InventoryStore::Slot_CarriedLeft);
+                    if (left != inventory.end() && left->getType() == ESM::Weapon::sRecordId)
+                        mAnimation->showWeapons(true);
+                }
 
                 mAnimation->showCarriedLeft(updateCarriedLeftVisible(mWeaponTypeId));
             }
@@ -1220,6 +1284,18 @@ namespace MWMechanics
         // type.
         else if (groupname == "spellcast" && action == mAttackType + " release")
         {
+            if (mCanCast && mEldenCastingItemId)
+            {
+                // Inventory selection can change while a cast is paused in
+                // the menu. Never release or consume a different enchanted item.
+                const auto& cls = mPtr.getClass();
+                const auto& inventory = cls.getContainerStore(mPtr);
+                const auto selected = inventory.getSelectedEnchantItem();
+                mCanCast = cls.getCreatureStats(mPtr).getSpells().getSelectedSpell().empty()
+                    && selected != inventory.end() && selected->getCellRef().getCount() > 0
+                    && selected->getCellRef().getRefNum() == *mEldenCastingItemId;
+            }
+            mEldenCastingItemId.reset();
             if (mCanCast)
                 MWBase::Environment::get().getWorld()->castSpell(mPtr, mCastingScriptedSpell);
             mCastingScriptedSpell = false;
@@ -1369,9 +1445,15 @@ namespace MWMechanics
 
             if (mWeapon != newWeapon)
             {
+                stats.getEldenGripTransition().reset();
                 mWeapon = newWeapon;
                 weaponChanged = true;
-                if (mEldenCombatActive && EldenCombat::Controller::isAttack(stats.getEldenCombat().action()))
+                const bool bowAttack = mWeaponTypeId == ESM::WeaponType::MarksmanBow
+                    && (mUpperBodyState == UpperBodyState::AttackWindUp
+                        || mUpperBodyState == UpperBodyState::AttackRelease
+                        || mUpperBodyState == UpperBodyState::AttackEnd);
+                if (mEldenCombatActive
+                    && (EldenCombat::Controller::isAttack(stats.getEldenCombat().action()) || bowAttack))
                 {
                     // Never continue an old moveset after its weapon was replaced or broke.
                     stats.getEldenCombat().reset(true);
@@ -1379,6 +1461,12 @@ namespace MWMechanics
                     mEldenUpdate = {};
                     mAnimation->disable(mCurrentWeapon);
                     mUpperBodyState = UpperBodyState::WeaponEquipped;
+                    if (bowAttack)
+                    {
+                        mReadyToHit = false;
+                        setAttackingOrSpell(false);
+                        mAnimation->detachArrow();
+                    }
                 }
             }
 
@@ -1605,6 +1693,8 @@ namespace MWMechanics
 
                 if (mWeaponTypeId == ESM::WeaponType::Spell)
                 {
+                    mEldenSpellAnimation.reset();
+                    mEldenCastingItemId.reset();
                     // Unset casting flag, otherwise pressing the mouse button down would
                     // continue casting every frame if there is no animation
                     setAttackingOrSpell(false);
@@ -1635,13 +1725,15 @@ namespace MWMechanics
                             const MWWorld::ConstPtr& enchantItem = *inv.getSelectedEnchantItem();
                             spellid = enchantItem.getClass().getEnchantment(enchantItem);
                             isMagicItem = true;
+                            if (mEldenCombatActive)
+                                mEldenCastingItemId = enchantItem.getCellRef().getRefNum();
                         }
                     }
 
-                    if (isMagicItem && !Settings::game().mUseMagicItemAnimations)
+                    if (isMagicItem && !Settings::game().mUseMagicItemAnimations && !mEldenCombatActive)
                     {
                         world->breakInvisibility(mPtr);
-                        // Enchanted items by default do not use casting animations
+                        // Outside Elden combat, preserve the native instant-item setting.
                         world->castSpell(mPtr);
                         // Spellcasting animation needs to "play" for at least one frame to reset the aiming factor
                         animPlaying = true;
@@ -1713,6 +1805,9 @@ namespace MWMechanics
 
                                 startKey = mAttackType + " start";
                                 stopKey = mAttackType + " stop";
+                                if (mEldenCombatActive)
+                                    mEldenSpellAnimation = EldenCombat::spellAnimation(
+                                        mAttackType, eldenSpellGesture(*effects, store));
 
                                 if (!cls.isBipedal(mPtr))
                                 {
@@ -1733,6 +1828,7 @@ namespace MWMechanics
                                         mCastingScriptedSpell); // No "release" text key to use, so cast immediately
                                 mCastingScriptedSpell = false;
                                 mCanCast = false;
+                                mEldenCastingItemId.reset();
                             }
 
                             playBlendedAnimation(mCurrentWeapon, priorityWeapon, MWRender::BlendMask_All, false, 1,
@@ -1786,6 +1882,8 @@ namespace MWMechanics
                     }
 
                     mUpperBodyState = UpperBodyState::AttackWindUp;
+                    if (mEldenCombatActive && mWeaponTypeId == ESM::WeaponType::MarksmanBow)
+                        mEldenPoseTime = 0.f;
 
                     // Reset the attack results when the attack starts.
                     // Strictly speaking this should probably be done when the attack ends,
@@ -1986,6 +2084,7 @@ namespace MWMechanics
         auto& stats = mPtr.getClass().getCreatureStats(mPtr);
         auto& combat = stats.getEldenCombat();
         auto& input = stats.getEldenCombatInput();
+        auto& gripTransition = stats.getEldenGripTransition();
         const auto world = MWBase::Environment::get().getWorld();
         const auto inputManager = MWBase::Environment::get().getInputManager();
         if (mPtr != getPlayer() && input.mAIControlled
@@ -2000,7 +2099,7 @@ namespace MWMechanics
             combat.clearRequests();
         }
         const bool enabled = useEldenCombat(mPtr) && !isScriptedAnimPlaying() && !stats.isParalyzed()
-            && !world->isSwimming(mPtr) && !world->isFlying(mPtr) && world->isActorCollisionEnabled(mPtr)
+            && !world->isSwimming(mPtr) && world->isActorCollisionEnabled(mPtr)
             && (mPtr != getPlayer() || (!inputManager->controlsDisabled()
                 && inputManager->getControlSwitch("playercontrols")));
         stats.setEldenCombatActive(enabled);
@@ -2008,6 +2107,8 @@ namespace MWMechanics
         const bool fightingEnabled = mPtr != getPlayer() || inputManager->getControlSwitch("playerfighting");
         mEldenMeleeActive = enabled && fightingEnabled && useEldenMelee(mPtr)
             && mUpperBodyState >= UpperBodyState::WeaponEquipped && mWeaponTypeId != ESM::WeaponType::Spell;
+        if (!mEldenMeleeActive || combat.action() != EldenCombat::Action::Idle)
+            gripTransition.reset();
         if (wasEldenMelee && (!useEldenMelee(mPtr) || !fightingEnabled)
             && (EldenCombat::Controller::isAttack(combat.action()) || mUpperBodyState == UpperBodyState::AttackWindUp
                 || mUpperBodyState == UpperBodyState::AttackRelease || mUpperBodyState == UpperBodyState::AttackEnd))
@@ -2026,7 +2127,13 @@ namespace MWMechanics
             if (mEldenCombatActive)
             {
                 combat.reset(true);
-                input = {};
+                // Swimming and temporary control suspension (including saving)
+                // cancel actions, but do not change the selected armament grip.
+                input.resetKeepingGrip();
+                // Restore attachments hidden by the selected left/right grip
+                // before handing control back to native animations.
+                mAnimation->showWeapons(mAnimation->getWeaponsShown());
+                mAnimation->showCarriedLeft(updateCarriedLeftVisible(mWeaponTypeId));
                 clearStateAnimation(mEldenDodgeAnimation);
                 if (mEldenGuardAnimation)
                     mAnimation->disable("shield");
@@ -2051,6 +2158,7 @@ namespace MWMechanics
             mEldenCombatActive = false;
             mEldenUpdate = {};
             combat.advanceHitProtection(duration);
+            updateEldenBossArt(mPtr, duration);
             return;
         }
         mEldenCombatActive = true;
@@ -2064,11 +2172,15 @@ namespace MWMechanics
         }
         if (offhand != mEldenOffhand)
         {
-            const auto attack = combat.attack();
-            if (attack.mLeftHand || attack.mPaired || combat.guarding())
+            gripTransition.reset();
+            if (EldenCombat::Controller::isAttack(combat.action()) || combat.guarding())
             {
                 combat.reset(true);
                 combat.setVitals(stats.getFatigue().getCurrent(), stats.getFatigue().getModified());
+                mEldenUpdate = {};
+                mAnimation->disable(mCurrentWeapon);
+                mUpperBodyState = UpperBodyState::WeaponEquipped;
+                mReadyToHit = false;
             }
             mEldenOffhand = offhand;
         }
@@ -2080,15 +2192,43 @@ namespace MWMechanics
         {
             input.mTwoHanded = input.mTwoHandedLeft = false;
             combat.reset(true);
+            mAnimation->showWeapons(mAnimation->getWeaponsShown());
+            mAnimation->showCarriedLeft(updateCarriedLeftVisible(mWeaponTypeId));
         }
-        const auto config = eldenCombatConfig(mPtr);
+        auto config = eldenCombatConfig(mPtr);
+        if (mEldenMeleeActive && mPtr.getType() == ESM::Creature::sRecordId
+            && !mAnimation->hasEldenAnimation())
+        {
+            // Select the native creature swing before the simulation advances.
+            // Its impact and recovery must not inherit an unrelated fist moveset.
+            // Bipedal is a gameplay flag, not proof that the available imported
+            // humanoid poses match this creature's actual skeleton.
+            if (mEldenNativeAttackSequence != combat.sequence())
+            {
+                mEldenNativeAttackSequence = combat.sequence();
+                mEldenNativeAttack.reset();
+                const std::string group = chooseRandomAttackAnimation();
+                const float from = mAnimation->getTextKeyTime(group + ": start");
+                const float to = mAnimation->getTextKeyTime(group + ": stop");
+                const float hit = mAnimation->getTextKeyTime(group + ": hit");
+                if (mAnimation->hasAnimation(group))
+                    mEldenNativeAttack = EldenCombat::nativeAttackTiming(group, from, to, hit);
+            }
+            config.mNativeAttack = mEldenNativeAttack;
+        }
+        else
+        {
+            mEldenNativeAttack.reset();
+            mEldenNativeAttackSequence.reset();
+        }
         combat.configure(config);
         combat.setVitals(stats.getFatigue().getCurrent(), stats.getFatigue().getModified());
         auto& movement = mPtr.getClass().getMovementSettings(mPtr);
         input.mMoveX = movement.mPosition[0];
         input.mMoveY = movement.mPosition[1];
         input.mGrounded = world->isOnGround(mPtr);
-        input.mCrouching = stats.getStance(CreatureStats::Stance_Sneak);
+        input.mFlying = world->isFlying(mPtr);
+        input.mCrouching = !input.mFlying && stats.getStance(CreatureStats::Stance_Sneak);
         input.mInCombat = mPtr == getPlayer() ? isPlayerInCombat() : stats.getAiSequence().isInCombat();
 
         if (mPtr != getPlayer() && !input.mAIControlled)
@@ -2114,20 +2254,44 @@ namespace MWMechanics
                 && target.getClass().getCreatureStats(target).getEldenCombat().criticalReady();
         }
         EldenCombat::Input controls = input;
-        if (!mWeapon.isEmpty() && mWeapon.getType() == ESM::Weapon::sRecordId
-            && (getWeaponType(mWeapon.get<ESM::Weapon>()->mBase->mData.mType)->mFlags & ESM::WeaponType::TwoHanded))
+        if (mAnimation->hasEldenEmbeddedSpear())
             controls.mTwoHanded = true;
+        // Elden grip is selected explicitly, independently of the native
+        // weapon record's two-hand animation group (including spears).
+        controls.mHandsBusy = gripTransition.busy();
         if (!mEldenMeleeActive)
         {
             controls.mLight = {};
             controls.mHeavy = {};
             controls.mGuard = {};
             controls.mCritical = {};
+            controls.mSpearThrust = {};
         }
         // Jump initiation remains in OpenMW physics; the simulation gates and charges it.
-        controls.mJump.mPressed
-            = mEldenJumpMovement.pressed(controls.mJump.mPressed, input.mGrounded, movement.mPosition[2] > 0.f);
+        controls.mJump.mPressed = !input.mFlying
+            && mEldenJumpMovement.pressed(controls.mJump.mPressed, input.mGrounded, movement.mPosition[2] > 0.f);
         mEldenUpdate = combat.update(controls, duration);
+        if (combat.action() != EldenCombat::Action::Idle)
+            gripTransition.reset();
+        else if (gripTransition.advance(mEldenUpdate.mAdvancedSeconds))
+        {
+            input.mTwoHanded = gripTransition.target() != EldenCombat::Grip::OneHand;
+            input.mTwoHandedLeft = gripTransition.target() == EldenCombat::Grip::TwoHandLeft;
+            // A left-hand grip selects that item's class and speed at the
+            // authored application frame; it never moves inventory instances.
+            combat.configure(eldenCombatConfig(mPtr));
+            mAnimation->showWeapons(true);
+            mAnimation->showCarriedLeft(!input.mTwoHanded || input.mTwoHandedLeft);
+        }
+        if (mEldenUpdate.mAttackStarted && combat.action() == EldenCombat::Action::SpearThrust
+            && mAnimation->hasEldenEmbeddedSpear())
+        {
+            const auto& definition = combat.definition();
+            Log(Debug::Info) << "Elden Ring Guile: Hunter's Thrust launched; clip=" << definition.mAnimation
+                             << ", speed=" << definition.mAnimationSpeed << ", duration=" << definition.mDuration
+                             << ", hit=" << (definition.mHitCount == 0 ? -1.f : definition.mHits.front().mFrom);
+        }
+        updateEldenBossArt(mPtr, mEldenUpdate.mAdvancedSeconds);
         if (combat.action() == EldenCombat::Action::Critical || (!input.mCriticalAvailable
             && combat.action() == EldenCombat::Action::Idle))
             mEldenCriticalPending = false;
@@ -2135,9 +2299,10 @@ namespace MWMechanics
         storeEldenStamina(mPtr);
         // A jump request may have waited in the controller's cancel buffer after
         // the original native jump pulse was consumed. Launch it when accepted.
-        if (input.mGrounded && mEldenUpdate.mJumpStarted)
+        if (!input.mFlying && input.mGrounded && mEldenUpdate.mJumpStarted)
             movement.mPosition[2] = 1.f;
-        if (input.mGrounded && movement.mPosition[2] > 0.f && combat.action() != EldenCombat::Action::Jump
+        if (!input.mFlying && input.mGrounded && movement.mPosition[2] > 0.f
+            && combat.action() != EldenCombat::Action::Jump
             && !mEldenUpdate.mJumpStarted)
             movement.mPosition[2] = 0.f;
         if (eldenReactionAction(mEldenAnimationAction) && !eldenReactionAction(combat.action()))
@@ -2186,10 +2351,17 @@ namespace MWMechanics
                     const auto* weapon = attackWeapon.get<ESM::Weapon>()->mBase;
                     mAttackType = getBestAttack(weapon);
                 }
+                if (action == EldenCombat::Action::GuardThrust)
+                    mAttackType = "thrust";
                 mAnimation->disable(mCurrentWeapon);
-                if (!mPtr.getClass().isBipedal(mPtr))
+                if (!combat.definition().mNativeAnimation.empty() || !mPtr.getClass().isBipedal(mPtr))
                 {
-                    mCurrentWeapon = chooseRandomAttackAnimation();
+                    if (action == EldenCombat::Action::SpearThrust && mAnimation->hasEldenEmbeddedSpear()
+                        && mAnimation->hasAnimation("attack3"))
+                        mCurrentWeapon = "attack3";
+                    else
+                        mCurrentWeapon = combat.definition().mNativeAnimation.empty()
+                            ? chooseRandomAttackAnimation() : combat.definition().mNativeAnimation;
                     // Creature records have one damage range for each attack
                     // group. Their selected animation must keep that damage type.
                     if (mCurrentWeapon == "attack1" || mCurrentWeapon == "swimattack1")
@@ -2208,8 +2380,8 @@ namespace MWMechanics
                         animationType = ESM::WeaponType::LongBladeTwoHand;
                     mCurrentWeapon = getWeaponAnimation(animationType);
                 }
-                const bool charging = action == EldenCombat::Action::Heavy1Charge
-                    || action == EldenCombat::Action::Heavy2Charge;
+                const bool charging = combat.definition().mNativeAnimation.empty()
+                    && (action == EldenCombat::Action::Heavy1Charge || action == EldenCombat::Action::Heavy2Charge);
                 std::string start = mAttackType + " start";
                 std::string stop = mAttackType + (charging ? " max attack" : " large follow stop");
                 float from = mAnimation->getTextKeyTime(mCurrentWeapon + ": " + start);
@@ -2222,7 +2394,8 @@ namespace MWMechanics
                     to = mAnimation->getTextKeyTime(mCurrentWeapon + ": stop");
                 }
                 const float seconds = std::max(1.f / 60.f, combat.definition().mDuration / EldenCombat::AnimationFps);
-                const float speed = to > from ? (to - from) / seconds : 1.f;
+                const float speed = !combat.definition().mNativeAnimation.empty()
+                    ? 1.f : (to > from ? (to - from) / seconds : 1.f);
                 mAnimation->disable(mCurrentWeapon);
                 MWRender::Animation::AnimPriority priority(Priority_Weapon);
                 priority[MWRender::BoneGroup_LowerBody] = Priority_WeaponLowerBody;
@@ -2264,9 +2437,7 @@ namespace MWMechanics
             mEldenAnimationSequence = combat.sequence();
             mEldenAnimationAction = action;
         }
-        const bool twoHanded = mPtr.getClass().getCreatureStats(mPtr).getEldenCombatInput().mTwoHanded
-            || (!mWeapon.isEmpty() && mWeapon.getType() == ESM::Weapon::sRecordId
-                && (getWeaponType(mWeapon.get<ESM::Weapon>()->mBase->mData.mType)->mFlags & ESM::WeaponType::TwoHanded));
+        const bool twoHanded = mPtr.getClass().getCreatureStats(mPtr).getEldenCombatInput().mTwoHanded;
         const bool guard = mEldenMeleeActive && combat.guarding() && combat.config().mHasShield
             && (!twoHanded || mPtr.getClass().getCreatureStats(mPtr).getEldenCombatInput().mTwoHandedLeft);
         if (guard != mEldenGuardAnimation || (guard && !mAnimation->isPlaying("shield")))
@@ -2285,7 +2456,7 @@ namespace MWMechanics
     void CharacterController::updateEldenPose(float duration, const osg::Vec3f& movement)
     {
         const auto& cls = mPtr.getClass();
-        if (!cls.isNpc() || !Settings::game().mEldenRingCombat || isScriptedAnimPlaying())
+        if (!mAnimation->hasEldenAnimation() || !useEldenCombat(mPtr) || isScriptedAnimPlaying())
         {
             mEldenLocomotion.reset();
             mEldenGroundContact.reset();
@@ -2322,16 +2493,119 @@ namespace MWMechanics
         const auto& input = stats.getEldenCombatInput();
         const auto action = combat.action();
         // This only stabilizes pose selection on terrain seams. Combat and
-        // physics continue to use actual contact; jumping owns its airborne pose.
+        // physics continue to use actual contact; flight cannot retain ground grace.
         const bool visuallyGrounded = mEldenGroundContact.update(input.mGrounded, duration);
-        if (action == EldenCombat::Action::Jump)
+        if (action == EldenCombat::Action::Jump || input.mFlying)
             mEldenGroundContact.reset();
-        if (mEldenCombatActive && mUpperBodyState == UpperBodyState::Casting && mCurrentWeapon == "spellcast"
-            && action == EldenCombat::Action::Idle && mHitState == CharState_None && input.mGrounded
-            && !input.mCrouching && std::hypot(movement.x(), movement.y()) <= 0.001f
-            && !(mPtr == getPlayer() && MWBase::Environment::get().getWorld()->isFirstPerson()))
+        const bool bow = mWeaponTypeId == ESM::WeaponType::MarksmanBow && stats.getDrawState() == DrawState::Weapon;
+        const EldenCombat::BowAnimationLengths bowLengths{
+            bow ? mAnimation->getEldenAnimationLength(EldenCombat::BowDrawAnimation) : 0.f,
+            bow ? mAnimation->getEldenAnimationLength(EldenCombat::BowHoldAnimation) : 0.f,
+            bow ? mAnimation->getEldenAnimationLength(EldenCombat::BowReleaseAnimation) : 0.f };
+        const bool shooting = mAttackType == "shoot"
+            && (mUpperBodyState == UpperBodyState::AttackWindUp || mUpperBodyState == UpperBodyState::AttackRelease
+                || mUpperBodyState == UpperBodyState::AttackEnd);
+        if (mEldenCombatActive && bow && shooting && mHitState == CharState_None
+            && (action == EldenCombat::Action::Idle || action == EldenCombat::Action::Jump))
         {
-            const auto spell = EldenCombat::spellAnimation(mAttackType);
+            float speed = 0.f;
+            // The native windup remains in the animation map while fully drawn.
+            if (mAnimation->getInfo(mCurrentWeapon, nullptr, &speed))
+            {
+                const std::string prefix = mCurrentWeapon + ": shoot ";
+                const EldenCombat::NativeBowTiming timing{
+                    mAnimation->getTextKeyTime(prefix + "start"),
+                    mAnimation->getTextKeyTime(prefix + "min attack"),
+                    mAnimation->getTextKeyTime(prefix + "max attack"),
+                    mAnimation->getTextKeyTime(prefix + "release"),
+                    mAnimation->getTextKeyTime(prefix + "follow start"),
+                    mAnimation->getTextKeyTime(prefix + "follow stop") };
+                const float currentTime = mAnimation->getCurrentTime(mCurrentWeapon);
+                const auto section = mUpperBodyState == UpperBodyState::AttackWindUp
+                        || (mUpperBodyState == UpperBodyState::AttackRelease && currentTime < timing.mMinAttack)
+                    ? EldenCombat::NativeBowSection::Windup : EldenCombat::NativeBowSection::ReleaseAndFollow;
+                mEldenPoseTime += duration * speed;
+                const auto pose = EldenCombat::bowAnimationPose(
+                    currentTime + duration * speed, section, timing, bowLengths,
+                    std::max(0.f, mEldenPoseTime - (timing.mMinAttack - timing.mStart)) * EldenCombat::AnimationFps);
+                if (pose)
+                {
+                    mEldenLocomotion.reset();
+                    mEldenIdleFacing.reset();
+                    const bool upperBodyOnly = input.mFlying || input.mCrouching || !input.mGrounded
+                        || std::hypot(movement.x(), movement.y()) > 0.001f
+                        || (mPtr == getPlayer() && MWBase::Environment::get().getWorld()->isFirstPerson());
+                    // Keep native bow/string controllers and shoot text keys;
+                    // only replace the actor's pose and attachment alignment.
+                    mAnimation->playEldenAnimation(pose->mClip, pose->mFrame, pose->mLoop, duration,
+                        0.f, {}, {}, {}, upperBodyOnly, true, pose->mDrawWeight);
+                    return;
+                }
+            }
+            // A partially installed bank or custom native shoot track must
+            // retain native shooting even while the combat action is Jump.
+            mAnimation->clearEldenAnimation();
+            mEldenPoseTime = 0.f;
+            mEldenLocomotion.reset();
+            mEldenGroundContact.reset();
+            mEldenIdleFacing.reset();
+            return;
+        }
+        const bool throwing = getWeaponType(mWeaponTypeId)->mWeaponClass == ESM::WeaponType::Thrown
+            && shooting;
+        if (mEldenCombatActive && throwing && mHitState == CharState_None
+            && (action == EldenCombat::Action::Idle || action == EldenCombat::Action::Jump))
+        {
+            const auto& animation = EldenCombat::DartThrowAnimation;
+            float speed = 0.f;
+            // A held throw remains in the animation map after its windup
+            // stops playing at max attack; keep showing the ready pose.
+            if (mAnimation->getInfo(mCurrentWeapon, nullptr, &speed))
+            {
+                const std::string prefix = mCurrentWeapon + ": shoot ";
+                const float minAttack = mAnimation->getTextKeyTime(prefix + "min attack");
+                const float maxAttack = mAnimation->getTextKeyTime(prefix + "max attack");
+                const float currentTime = mAnimation->getCurrentTime(mCurrentWeapon);
+                float time = currentTime + duration * speed;
+                // Holding the native attack stops at max attack. Predict the
+                // same clamp so a fully charged throw stays in its ready pose.
+                if (mUpperBodyState == UpperBodyState::AttackWindUp
+                    || (mUpperBodyState == UpperBodyState::AttackRelease && currentTime < minAttack))
+                    time = std::min(time, maxAttack);
+                const auto frame = EldenCombat::throwingAnimationFrame(time,
+                    mAnimation->getTextKeyTime(prefix + "start"),
+                    minAttack, maxAttack,
+                    mAnimation->getTextKeyTime(prefix + "release"),
+                    mAnimation->getTextKeyTime(prefix + "follow start"),
+                    mAnimation->getTextKeyTime(prefix + "follow stop"),
+                    mUpperBodyState == UpperBodyState::AttackEnd
+                        && time >= mAnimation->getTextKeyTime(prefix + "release"),
+                    mAnimation->getEldenAnimationLength(animation.mClip));
+                if (frame)
+                {
+                    mEldenPoseTime = 0.f;
+                    mEldenLocomotion.reset();
+                    mEldenIdleFacing.reset();
+                    // AI footwork can stop/start during a single throw. Keep
+                    // its native legs throughout instead of swapping between
+                    // the source windup's rotated hips and native locomotion.
+                    const bool upperBodyOnly = mPtr != getPlayer()
+                        || input.mFlying || input.mCrouching || !input.mGrounded
+                        || std::hypot(movement.x(), movement.y()) > 0.001f
+                        || (mPtr == getPlayer() && MWBase::Environment::get().getWorld()->isFirstPerson());
+                    // Native text keys still release exactly one projectile,
+                    // consume ammunition, and determine damage and aiming.
+                    mAnimation->playEldenAnimation(animation.mClip, *frame, false, duration,
+                        0.f, {}, {}, {}, upperBodyOnly);
+                    return;
+                }
+            }
+        }
+        if (mEldenCombatActive && mUpperBodyState == UpperBodyState::Casting && mCurrentWeapon == "spellcast"
+            && (action == EldenCombat::Action::Idle || action == EldenCombat::Action::Jump)
+            && mHitState == CharState_None)
+        {
+            const auto& spell = mEldenSpellAnimation;
             float speed = 0.f;
             if (spell && mAnimation->isPlaying(mCurrentWeapon)
                 && mAnimation->getInfo(mCurrentWeapon, nullptr, &speed))
@@ -2352,17 +2626,27 @@ namespace MWMechanics
                     mEldenPoseTime = 0.f;
                     mEldenLocomotion.reset();
                     mEldenIdleFacing.reset();
-                    mAnimation->playEldenAnimation(pose->mClip, pose->mFrame, false, duration);
+                    // Match throwing: AI aiming/navigation owns the lower
+                    // body even while briefly stationary during a cast.
+                    const bool upperBodyOnly = mPtr != getPlayer()
+                        || input.mFlying || !input.mGrounded || input.mCrouching
+                        || std::hypot(movement.x(), movement.y()) > 0.001f
+                        || (mPtr == getPlayer() && MWBase::Environment::get().getWorld()->isFirstPerson());
+                    mAnimation->playEldenAnimation(pose->mClip, pose->mFrame, false, duration,
+                        0.f, {}, {}, {}, upperBodyOnly);
                     return;
                 }
             }
         }
-        // Native moving/first-person spell, ranged, equip, swimming and scripted
-        // poses still own their tracks. Melee text keys remain native underneath.
+        const bool bowCarry = bow && mUpperBodyState == UpperBodyState::WeaponEquipped
+            && bowLengths.mDraw > 0.f && bowLengths.mHold > 0.f && bowLengths.mRelease > 0.f
+            && mAnimation->getEldenAnimationLength(EldenCombat::BowIdleAnimation) > 0.f;
+        // Other ranged, equip, swimming and scripted poses still use native
+        // tracks. Melee text keys remain native underneath the imported poses.
         if (!mEldenCombatActive || mUpperBodyState == UpperBodyState::Equipping
             || mUpperBodyState == UpperBodyState::Unequipping
             || (mHitState != CharState_None && !eldenReactionAction(action)) || (action == EldenCombat::Action::Idle
-                && stats.getDrawState() != DrawState::Nothing && !mEldenMeleeActive))
+                && stats.getDrawState() != DrawState::Nothing && !mEldenMeleeActive && !bowCarry))
         {
             mAnimation->clearEldenAnimation();
             mEldenPoseTime = 0.f;
@@ -2372,13 +2656,24 @@ namespace MWMechanics
             return;
         }
         mEldenPoseTime += duration;
-        const bool equipped = stats.getDrawState() == DrawState::Weapon;
-        const bool twoHanded = equipped && (input.mTwoHanded || (!mWeapon.isEmpty()
-            && mWeapon.getType() == ESM::Weapon::sRecordId
-            && (getWeaponType(mWeapon.get<ESM::Weapon>()->mBase->mData.mType)->mFlags & ESM::WeaponType::TwoHanded)));
+        const bool embeddedSpear = mAnimation->hasEldenEmbeddedSpear();
+        const bool equipped = embeddedSpear || stats.getDrawState() == DrawState::Weapon;
+        const bool twoHanded = equipped && (embeddedSpear || input.mTwoHanded);
         const auto weapon = equipped ? combat.config().mWeaponClass : EldenCombat::WeaponClass::Fist;
-        const std::string stance = EldenCombat::stanceAnimation(weapon, twoHanded, 0);
-        const std::string grip = equipped ? stance : std::string{};
+        const std::string stance = bow ? std::string(EldenCombat::BowIdleAnimation)
+            : EldenCombat::stanceAnimation(weapon, twoHanded, 0);
+        const std::string grip = equipped && !bow ? stance : std::string{};
+        const auto& gripTransition = stats.getEldenGripTransition();
+        EldenCombat::GripPose gripPose;
+        if (equipped && gripTransition.active() && action == EldenCombat::Action::Idle)
+        {
+            const auto pose = gripTransition.pose();
+            if (mAnimation->getEldenAnimationLength(pose.mAnimation) > 0.f)
+                gripPose = pose;
+        }
+        const auto guard = mEldenMeleeActive
+            ? EldenCombat::guardAnimation(weapon, twoHanded, action, combat.guarding())
+            : EldenCombat::GuardAnimation{};
         if (action != EldenCombat::Action::Idle)
         {
             mEldenLocomotion.reset();
@@ -2392,39 +2687,46 @@ namespace MWMechanics
             const float yaw = action == EldenCombat::Action::Roll || action == EldenCombat::Action::CrouchRoll
                 ? std::atan2(-mEldenUpdate.mMoveX, mEldenUpdate.mMoveY) : 0.f;
             mAnimation->playEldenAnimation(clip, combat.frame() * definition.mAnimationSpeed, false, duration,
-                yaw, {}, {}, grip);
+                yaw, guard.mLeftArm, guard.mRightArm, grip, false, bow);
             return;
         }
         // Walking and standing need the same visual tolerance for brief terrain
-        // contact gaps as sprinting. Sustained falls still select the air pose.
-        if (!visuallyGrounded && !combat.sprinting())
+        // contact gaps as sprinting. Levitation uses the imported standing/walk
+        // poses; falls still select the air pose.
+        if (!input.mFlying && !visuallyGrounded && !combat.sprinting())
         {
             mEldenLocomotion.reset();
             mEldenIdleFacing.reset();
-            mAnimation->playEldenAnimation("a000_202040", mEldenPoseTime * EldenCombat::AnimationFps, true,
-                duration, 0.f, {}, {}, grip);
+            mAnimation->playEldenAnimation(bow ? EldenCombat::BowIdleAnimation : "a000_202040",
+                mEldenPoseTime * EldenCombat::AnimationFps, true, duration, 0.f, {}, {}, grip, bow, bow,
+                0.f, gripPose.mAnimation, gripPose.mFrame);
             return;
         }
 
         const float travelSpeed = std::hypot(movement.x(), movement.y());
         const bool moving = travelSpeed > 0.001f;
-        std::string clip = input.mCrouching ? "a000_300000" : stance;
+        std::string clip = input.mCrouching ? (bow ? "a014_300000" : "a000_300000") : stance;
         float frame = mEldenPoseTime * EldenCombat::AnimationFps;
         float yaw = 0.f;
         if (moving)
         {
-            const bool running = stats.getStance(CreatureStats::Stance_Run);
+            const bool running = !input.mFlying && stats.getStance(CreatureStats::Stance_Run);
             // Native leg yaw is overwritten by the imported full-body pose.
             // Apply this preference to the imported gait itself, using actual
             // smoothed travel while leaving the actor/camera aiming frame alone.
-            const bool turnToMovement = Settings::game().mTurnToMovementDirection && !input.mLockedOn
+            const bool turnToMovement = Settings::game().mTurnToMovementDirection && !input.mLockedOn && !guard
                 && !(mPtr == getPlayer() && MWBase::Environment::get().getWorld()->isFirstPerson());
             const auto locomotion = mEldenLocomotion.update(
                 movement.x(), movement.y(), input.mCrouching, running, combat.sprinting(), turnToMovement);
             yaw = locomotion.mYaw;
-            clip = EldenCombat::stanceAnimation(weapon, twoHanded, locomotion.mId);
-            if (!twoHanded || input.mCrouching || mAnimation->getEldenAnimationLength(clip) <= 0.f)
-                clip = EldenCombat::stanceAnimation(EldenCombat::WeaponClass::Fist, false, locomotion.mId);
+            // Shared two-handed poses are reflected for a selected left weapon.
+            // Reflect the source strafe as well so its feet still follow travel.
+            const unsigned sourceId = twoHanded && input.mTwoHandedLeft && weapon != EldenCombat::WeaponClass::Shield
+                ? EldenCombat::mirroredLocomotionId(locomotion.mId) : locomotion.mId;
+            clip = bow ? EldenCombat::bowStanceAnimation(sourceId)
+                : EldenCombat::stanceAnimation(weapon, twoHanded, sourceId);
+            if (!bow && (input.mCrouching || mAnimation->getEldenAnimationLength(clip) <= 0.f))
+                clip = EldenCombat::stanceAnimation(EldenCombat::WeaponClass::Fist, false, sourceId);
             const float length = mAnimation->getEldenAnimationLength(clip);
             if (length > 0.f)
             {
@@ -2444,15 +2746,17 @@ namespace MWMechanics
             yaw = mEldenIdleFacing.update(mPtr.getRefData().getPosition().rot[2], yaw, moving);
         else
             mEldenIdleFacing.reset();
-        std::string leftArm;
-        std::string rightArm = moving && equipped && !twoHanded ? stance : std::string{};
-        if (mEldenMeleeActive && combat.guarding())
-        {
-            leftArm = EldenCombat::stanceAnimation(twoHanded ? weapon : EldenCombat::WeaponClass::Shield, twoHanded, 100);
-            if (twoHanded)
-                rightArm = leftArm;
-        }
-        mAnimation->playEldenAnimation(clip, frame, true, duration, yaw, leftArm, rightArm, grip);
+        // Keep the gait's authored weapon-arm motion. The idle carry is only
+        // needed for a missing weapon gait or a special stance while crouching.
+        std::string rightArm = moving && equipped && EldenCombat::locomotionNeedsCarry(stance, clip, twoHanded)
+            ? stance : std::string{};
+        if (!guard.mRightArm.empty())
+            rightArm = guard.mRightArm;
+        const bool upperBodyOnly = bow && mPtr == getPlayer() && MWBase::Environment::get().getWorld()->isFirstPerson();
+        // Grip changes overlay only the authored arms. Keep the current gait,
+        // stride and remembered world heading throughout both swap phases.
+        mAnimation->playEldenAnimation(clip, frame, true, duration, yaw, guard.mLeftArm, rightArm, grip, upperBodyOnly, bow,
+            0.f, gripPose.mAnimation, gripPose.mFrame);
     }
 
     void CharacterController::hitEldenCombat()
@@ -2466,15 +2770,41 @@ namespace MWMechanics
             osg::Vec3f position;
             const bool success = mPtr.getClass().evaluateHit(mPtr, target, position);
             if (target.isEmpty())
-                break; // Keep checking throughout the active window as the weapon moves.
+            {
+                // Each paired weapon has its own reach. A miss must not hide
+                // the other hand's overlapping contact; retry live misses on
+                // the next update as the weapon/target continues moving.
+                combat.deferHit();
+                continue;
+            }
             std::string_view attackType = mAttackType;
+            // A slow update may finish this swing and start a different group
+            // before delivering its crossed impact. Keep the old damage range.
+            if (attack->mNativeAnimation == "attack1" || attack->mNativeAnimation == "swimattack1")
+                attackType = "chop";
+            else if (attack->mNativeAnimation == "attack2" || attack->mNativeAnimation == "swimattack2")
+                attackType = "slash";
+            else if (attack->mNativeAnimation == "attack3" || attack->mNativeAnimation == "swimattack3")
+                attackType = "thrust";
             const auto weapon = eldenAttackWeapon(mPtr);
             if (attack->mLeftHand && !weapon.isEmpty())
                 attackType = getBestAttack(weapon.get<ESM::Weapon>()->mBase);
+            if (attack->mAction == EldenCombat::Action::GuardThrust)
+                attackType = "thrust";
             const int type = attackType == "chop" ? ESM::Weapon::AT_Chop
                 : attackType == "thrust" ? ESM::Weapon::AT_Thrust : ESM::Weapon::AT_Slash;
             mPtr.getClass().hit(mPtr, attack->mStrength, attack->mStrength, type, target, position, success);
             combat.markHit();
+            if (combat.action() == EldenCombat::Action::Deflected)
+            {
+                // Contact is resolved after this frame's pose update. Start
+                // native recoil now and release the imported attack override,
+                // including while the impact hit-stop freezes the next update.
+                refreshHitRecoilAnims();
+                updateEldenCombatAnimations();
+                mAnimation->clearEldenAnimation();
+                break;
+            }
         }
     }
 
@@ -2553,6 +2883,7 @@ namespace MWMechanics
         const MWWorld::Class& cls = mPtr.getClass();
         osg::Vec3f movement(0.f, 0.f, 0.f);
         bool isMoving = false;
+        bool hasMovementIntent = false;
         bool eldenJumpLaunched = false;
         float speed = 0.f;
 
@@ -2579,7 +2910,9 @@ namespace MWMechanics
             mEldenGroundContact.reset();
             mEldenIdleFacing.reset();
             cls.getCreatureStats(mPtr).getEldenCombat().reset(true);
-            cls.getCreatureStats(mPtr).getEldenCombatInput() = {};
+            cls.getCreatureStats(mPtr).getEldenBossArt().cancel();
+            cls.getCreatureStats(mPtr).getEldenGripTransition().reset();
+            cls.getCreatureStats(mPtr).getEldenCombatInput().resetKeepingGrip();
             mEldenJumpMovement.reset(cls.getMovementSettings(mPtr).mPosition[2]);
             cls.getCreatureStats(mPtr).setTeleported(false);
         }
@@ -2599,6 +2932,18 @@ namespace MWMechanics
             CreatureStats& stats = cls.getCreatureStats(mPtr);
             Movement& movementSettings = cls.getMovementSettings(mPtr);
 
+            // Physics runs after this controller consumes movementSettings. Keep
+            // actual input separate from attack root motion, inertia and scripts.
+            if (isPlayer)
+            {
+                const auto input = MWBase::Environment::get().getInputManager();
+                hasMovementIntent = !input->controlsDisabled() && input->getControlSwitch("playercontrols")
+                    && !stats.isParalyzed() && !isKnockedDown() && !isKnockedOut()
+                    && !isScriptedAnimPlaying() && !mSkipAnim
+                    && (std::abs(movementSettings.mPosition[0]) > 0.01f
+                        || std::abs(movementSettings.mPosition[1]) > 0.01f);
+            }
+
             // Force Jump Logic
 
             isMoving = (std::abs(movementSettings.mPosition[0]) > .5 || std::abs(movementSettings.mPosition[1]) > .5);
@@ -2612,7 +2957,8 @@ namespace MWMechanics
                     movementSettings.mPosition[2] = onground ? 1.f : 0.f;
             }
             updateEldenCombat(duration);
-            mEldenJumpMovement.update(mEldenUpdate, mEldenCombatActive, onground, movementSettings.mPosition[2] > 0.f);
+            mEldenJumpMovement.update(
+                mEldenUpdate, mEldenCombatActive && !flying, onground, movementSettings.mPosition[2] > 0.f);
 
             const auto inputManager = MWBase::Environment::get().getInputManager();
             if (isPlayer && stats.getEldenCombatInput().mLockedOn && !stats.isParalyzed()
@@ -2646,7 +2992,9 @@ namespace MWMechanics
             vec.normalize();
 
             const bool smoothMovement = Settings::game().mSmoothMovement;
-            if (mEldenCombatActive)
+            // Flight keeps native movement normalization and smoothing; its
+            // speed and camera-pitch ascent remain owned by OpenMW physics.
+            if (mEldenCombatActive && !flying)
             {
                 const float angle = mPtr.getRefData().getPosition().rot[2];
                 const osg::Vec2f target = Misc::rotateVec2f(
@@ -2758,8 +3106,21 @@ namespace MWMechanics
 
             speed = cls.getCurrentSpeed(mPtr)
                 * (mEldenCombatActive ? mEldenJumpMovement.multiplier(mEldenUpdate) : 1.f);
-            vec.x() *= speed;
-            vec.y() *= speed;
+            float planarSpeed = speed;
+            if (mEldenCombatActive && mAnimation->hasEldenAnimation()
+                && mPtr.getType() == ESM::Creature::sRecordId
+                && !(mPtr.get<ESM::Creature>()->mBase->mFlags & ESM::Creature::Flies)
+                && isrunning && !sneak && !inwater && !flying && !isMovementAnimationControlled())
+            {
+                // Native creatures obtain their running pace from the ratio
+                // of run/walk root motion, not Creature::getRunSpeed(). Keep
+                // that pace when imported posing bypasses the native root.
+                // Both physics velocity and imported stride use this speed.
+                planarSpeed *= EldenCombat::creatureRunSpeedMultiplier(
+                    mAnimation->getVelocity("walkforward"), mAnimation->getVelocity("runforward"));
+            }
+            vec.x() *= planarSpeed;
+            vec.y() *= planarSpeed;
 
             if (mEldenCombatActive && mEldenJumpMovement.movementLocked(mEldenUpdate))
             {
@@ -3043,6 +3404,24 @@ namespace MWMechanics
 
             if (!mSkipAnim)
             {
+                if (mEldenCombatActive && !isBiped && !mAnimation->hasEldenAnimation())
+                {
+                    // Path steering and world-space smoothing can request a
+                    // direction absent from a native creature's rig. Select a
+                    // usable gait without changing that velocity or waypoint.
+                    constexpr std::array<std::array<CharacterState, 4>, 5> gaits{ {
+                        { CharState_WalkForward, CharState_WalkBack, CharState_WalkLeft, CharState_WalkRight },
+                        { CharState_RunForward, CharState_RunBack, CharState_RunLeft, CharState_RunRight },
+                        { CharState_SwimWalkForward, CharState_SwimWalkBack, CharState_SwimWalkLeft,
+                            CharState_SwimWalkRight },
+                        { CharState_SwimRunForward, CharState_SwimRunBack, CharState_SwimRunLeft,
+                            CharState_SwimRunRight },
+                        { CharState_SneakForward, CharState_SneakBack, CharState_SneakLeft, CharState_SneakRight },
+                    } };
+                    const auto supported = getSupportedMovementDirections(movestate);
+                    for (const auto& gait : gaits)
+                        movestate = nativeMovementAnimation(movestate, gait, supported);
+                }
                 refreshCurrentAnims(idlestate, movestate, jumpstate, updateWeaponState());
                 updateEldenCombatAnimations();
                 updateIdleStormState(inwater);
@@ -3111,7 +3490,22 @@ namespace MWMechanics
             && (mEldenUpdate.mFrozen || cls.getCreatureStats(mPtr).getEldenCombat().hitStopRemaining() > 0.f);
         const float animationDuration = mEldenCombatActive && cls.isActor() && !cls.getCreatureStats(mPtr).isDead()
             ? mEldenUpdate.mAdvancedSeconds : duration;
-        const float poseDuration = (mSkipAnim && !isScriptedAnimPlaying()) || combatFrozen ? 0.f : animationDuration;
+        float poseDuration = (mSkipAnim && !isScriptedAnimPlaying()) || combatFrozen ? 0.f : animationDuration;
+        if (mEldenMeleeActive && !mSkipAnim && !combatFrozen)
+        {
+            const auto& combat = cls.getCreatureStats(mPtr).getEldenCombat();
+            if (!combat.definition().mNativeAnimation.empty()
+                && mCurrentWeapon == combat.definition().mNativeAnimation)
+            {
+                // A new swing may start partway through a slow update. Advance
+                // its native track to the same clock as its hit window, rather
+                // than advancing the fresh animation by the whole update again.
+                const float from = mAnimation->getTextKeyTime(mCurrentWeapon + ": start");
+                const float current = mAnimation->getCurrentTime(mCurrentWeapon);
+                if (from >= 0.f && current >= from)
+                    poseDuration = std::max(0.f, from + combat.frame() / EldenCombat::AnimationFps - current);
+            }
+        }
         updateEldenPose(poseDuration, movement);
         osg::Vec3f movementFromAnimation = mAnimation->runAnimation(poseDuration);
 
@@ -3184,6 +3578,9 @@ namespace MWMechanics
             movement.y() *= scale;
             world->queueMovement(mPtr, movement);
         }
+
+        if (isPlayer)
+            world->setActorMovementIntent(mPtr, hasMovementIntent);
 
         mSkipAnim = false;
 
@@ -3433,8 +3830,10 @@ namespace MWMechanics
 
         // Imported locomotion follows the requested speed; the native clip
         // underneath it must not replace that velocity with directional root
-        // motion. Elden attack/dodge displacement is applied separately.
-        if (mEldenCombatActive)
+        // motion. Creatures without an imported pose adapter still need their
+        // native root motion, including the run/walk animation velocity ratio.
+        // Elden attack/dodge displacement is applied separately.
+        if (mEldenCombatActive && mAnimation->hasEldenAnimation())
             return false;
 
         if (Settings::game().mPlayerMovementIgnoresAnimation && mPtr == getPlayer())
@@ -3476,11 +3875,14 @@ namespace MWMechanics
         // because we disabled attack animations anyway.
         mCanCast = false;
         mCastingScriptedSpell = false;
+        mEldenSpellAnimation.reset();
+        mEldenCastingItemId.reset();
         setAttackingOrSpell(false);
         if (mPtr.getClass().isActor() && mEldenCombatActive)
         {
             auto& stats = mPtr.getClass().getCreatureStats(mPtr);
             stats.getEldenCombat().reset(true);
+            stats.getEldenGripTransition().reset();
             stats.getEldenCombat().setVitals(stats.getFatigue().getCurrent(), stats.getFatigue().getModified());
             auto& input = stats.getEldenCombatInput();
             input.mLight = input.mHeavy = input.mGuard = input.mDodge = input.mJump = input.mCritical = {};
@@ -3625,6 +4027,11 @@ namespace MWMechanics
                 alpha *= std::clamp(1.f - chameleon / 100.f, 0.25f, 0.75f);
             }
         }
+
+        // Keep the blocker visible while the player passes through. Compose with
+        // native invisibility/chameleon and distance fading; this is not a spell.
+        if (MWBase::Environment::get().getWorld()->isActorPassingThroughPlayer(mPtr))
+            alpha *= 0.25f;
 
         // TODO: implement a dithering shader rather than just change object transparency.
         mAnimation->setAlpha(visibility, alpha);
@@ -3891,6 +4298,11 @@ namespace MWMechanics
 
     MWWorld::MovementDirectionFlags CharacterController::getSupportedMovementDirections() const
     {
+        return getSupportedMovementDirections(mMovementState);
+    }
+
+    MWWorld::MovementDirectionFlags CharacterController::getSupportedMovementDirections(CharacterState state) const
+    {
         if (!mAnimation)
             return 0;
         using namespace std::string_view_literals;
@@ -3903,7 +4315,7 @@ namespace MWMechanics
         constexpr std::array run = { "run"sv, "walk"sv };
         constexpr std::array swimRun = { "swimrun"sv, "run"sv, "walk"sv };
         constexpr std::array swim = { "swim"sv };
-        switch (mMovementState)
+        switch (state)
         {
             case CharState_None:
             case CharState_SpecialIdle:

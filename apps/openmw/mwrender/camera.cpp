@@ -31,8 +31,8 @@ namespace
 {
 
     // The reference simulation uses metres. Morrowind uses roughly 70 units/metre.
-    constexpr float sCombatLockOnRange = 15.f * 70.f;
-    constexpr float sCombatLockBreakRange = 22.f * 70.f;
+    constexpr float sCombatLockOnRange = 30.f * 70.f;
+    constexpr float sCombatLockBreakRange = 44.f * 70.f;
 
     bool isCombatLockTarget(const MWWorld::Ptr& actor)
     {

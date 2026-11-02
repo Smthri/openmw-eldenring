@@ -32,6 +32,7 @@
 #include "../mwworld/inventorystore.hpp"
 
 #include "../mwmechanics/actorutil.hpp"
+#include "../mwmechanics/eldencombat.hpp"
 #include "../mwmechanics/npcstats.hpp"
 #include "../mwmechanics/weapontype.hpp"
 
@@ -717,7 +718,9 @@ namespace MWRender
             else
                 mAimingFactor = std::max(0.f, mAimingFactor - timepassed * 0.5f);
 
-            float rotateFactor = 0.75f + 0.25f * mAimingFactor;
+            // Imported bow poses already include this aiming pitch. Keep the
+            // native first-person translation offset without pitching twice.
+            float rotateFactor = mEldenBowAnimation ? 0.f : 0.75f + 0.25f * mAimingFactor;
 
             mFirstPersonNeckController->setRotate(
                 osg::Quat(mPtr.getRefData().getPosition().rot[0] * rotateFactor, osg::Vec3f(-1, 0, 0)));
@@ -948,7 +951,11 @@ namespace MWRender
     {
         mShowWeapons = showWeapon;
         mAmmunition.reset();
-        if (showWeapon)
+        const auto& input = mPtr.getClass().getCreatureStats(mPtr).getEldenCombatInput();
+        const bool showRightWeapon = showWeapon
+            && !((MWMechanics::useEldenMelee(mPtr) || mEldenInventoryPreview)
+                && input.mTwoHanded && input.mTwoHandedLeft);
+        if (showRightWeapon)
         {
             const MWWorld::InventoryStore& inv = mPtr.getClass().getInventoryStore(mPtr);
             MWWorld::ConstContainerStoreIterator weapon = inv.getSlot(MWWorld::InventoryStore::Slot_CarriedRight);
@@ -975,12 +982,23 @@ namespace MWRender
         {
             removeIndividualPart(ESM::PRT_Weapon);
             // If we remove/hide weapon from player, we should reset attack animation as well
-            if (mPtr == MWMechanics::getPlayer())
+            if (!showWeapon && mPtr == MWMechanics::getPlayer())
                 mPtr.getClass().getCreatureStats(mPtr).setAttackingOrSpell(false);
         }
 
-        updateHolsteredWeapon(!mShowWeapons);
+        updateHolsteredWeapon(!showRightWeapon);
         updateQuiver();
+
+        // Off-hand weapons share the native weapon attach/detach keys. Shields
+        // and lights keep their independent visibility and sheathing behavior.
+        const MWWorld::InventoryStore& inv = mPtr.getClass().getInventoryStore(mPtr);
+        const auto left = inv.getSlot(MWWorld::InventoryStore::Slot_CarriedLeft);
+        if (left != inv.end() && left->getType() == ESM::Weapon::sRecordId)
+        {
+            ESM::RefId weaponTypeId;
+            MWMechanics::getActiveWeapon(mPtr, &weaponTypeId);
+            showCarriedLeft(updateCarriedLeftVisible(weaponTypeId));
+        }
     }
 
     bool NpcAnimation::updateCarriedLeftVisible(ESM::RefId weaptype) const
@@ -1005,14 +1023,27 @@ namespace MWRender
             }
         }
 
+        if (MWMechanics::useEldenMelee(mPtr) || mEldenInventoryPreview)
+        {
+            const auto& stats = mPtr.getClass().getCreatureStats(mPtr);
+            if (stats.getDrawState() == MWMechanics::DrawState::Weapon || mEldenInventoryPreview)
+            {
+                const auto& input = stats.getEldenCombatInput();
+                return !input.mTwoHanded || input.mTwoHandedLeft;
+            }
+        }
         return !(MWMechanics::getWeaponType(weaptype)->mFlags & ESM::WeaponType::TwoHanded);
     }
 
     void NpcAnimation::showCarriedLeft(bool show)
     {
-        mShowCarriedLeft = show;
         const MWWorld::InventoryStore& inv = mPtr.getClass().getInventoryStore(mPtr);
         MWWorld::ConstContainerStoreIterator iter = inv.getSlot(MWWorld::InventoryStore::Slot_CarriedLeft);
+        // Equipment refreshes and shield text keys may request the left slot
+        // while weapons are sheathed. Only armor/lights may remain visible.
+        if (iter != inv.end() && iter->getType() == ESM::Weapon::sRecordId)
+            show = show && mShowWeapons;
+        mShowCarriedLeft = show;
         if (show && iter != inv.end())
         {
             osg::Vec4f glowColor = iter->getClass().getEnchantmentColor(*iter);
@@ -1121,7 +1152,9 @@ namespace MWRender
 
     void NpcAnimation::equipmentChanged()
     {
-        if (Settings::game().mShieldSheathing)
+        // A shield or torch replacing a hidden off-hand weapon must regain
+        // its native carry visibility, including after Elden combat is disabled.
+        if (Settings::game().mShieldSheathing || MWMechanics::useEldenCombat(mPtr) || !mShowWeapons)
         {
             ESM::RefId weaponTypeId;
             MWMechanics::getActiveWeapon(mPtr, &weaponTypeId);

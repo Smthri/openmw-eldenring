@@ -1,7 +1,17 @@
 #include "combat.hpp"
+#include "flighttests.hpp"
+#include "poisetests.hpp"
+#include "dodgecosttests.hpp"
+#include "nativeattacktests.hpp"
+#include "guardtests.hpp"
+#include "guardthrusttests.hpp"
+#include "griptests.hpp"
+#include "pairedtests.hpp"
 #include "animations.hpp"
 #include "imported_timings.hpp"
+#include "timingdata.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <memory>
@@ -44,6 +54,46 @@ namespace
         const auto endpoint = Controller::rootMotionAt(definition, definition.mDuration);
         for (const float coordinate : endpoint)
             check(std::isfinite(coordinate), "non-finite sampled root motion");
+    }
+
+    void locomotion(const AnimationBank& bank, WeaponClass weapon, bool twoHanded)
+    {
+        const std::string stance = stanceAnimation(weapon, twoHanded, 0);
+        const auto hand = bank.jointOffset("R_Hand");
+        const auto chest = bank.jointOffset("Spine2");
+        check(hand && chest, "gait bank lacks the weapon hand or torso");
+        for (unsigned id : { 20000u, 20001u, 20002u, 20003u, 20100u, 20101u, 20102u, 20103u,
+                 20200u, 22100u, 22101u, 22102u, 22103u })
+        {
+            const std::string name = stanceAnimation(weapon, twoHanded, id);
+            const auto* clip = bank.find(name);
+            check(clip != nullptr, "bank is missing an authored weapon gait");
+            check(!locomotionNeedsCarry(stance, name, twoHanded),
+                "weapon's own gait is overridden by its idle arm");
+            // The source's base walk/run/sprint animates the weapon hand
+            // relative to the torso, even with the camera and torso stationary.
+            // The old a000 idle overlay erased this movement for native swords.
+            if (stance == "a000_000000" && id < 22100)
+            {
+                std::vector<float> pose;
+                std::array<float, 3> first{};
+                float displacement = 0.f;
+                for (std::size_t frame = 0; frame + 1 < clip->mFrames; ++frame)
+                {
+                    bank.sample(*clip, static_cast<float>(frame), true, pose);
+                    float squared = 0.f;
+                    for (std::size_t axis = 0; axis < first.size(); ++axis)
+                    {
+                        const float position = pose[*hand + axis] - pose[*chest + axis];
+                        if (frame == 0)
+                            first[axis] = position;
+                        squared += (position - first[axis]) * (position - first[axis]);
+                    }
+                    displacement = std::max(displacement, squared);
+                }
+                check(displacement > 0.05f * 0.05f, "authored gait's weapon hand no longer moves with the stride");
+            }
+        }
     }
 
     void lightAttack(const Config& config, bool twoHanded, const ActionDef& imported)
@@ -172,12 +222,69 @@ int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 2)
+        {
+            std::ifstream stream(argv[2], std::ios::binary);
+            check(static_cast<bool>(stream), "cannot open local runtime timing file");
+            EldenCombat::setRuntimeTimings(std::make_shared<EldenCombat::TimingData>(stream));
+        }
+        EldenCombat::Tests::controlledFlight();
+        EldenCombat::Tests::enemyPoise();
+        EldenCombat::Tests::configurableDodgeCost();
+        EldenCombat::Tests::nativeCreatureAttacks();
+        EldenCombat::Tests::nativeGuardStamina();
+        EldenCombat::Tests::guardRecoilAnimation();
+        EldenCombat::Tests::attackerGuardDeflection();
+        EldenCombat::Tests::guardedSpearAttacks();
+        EldenCombat::Tests::gripTransitions();
+        EldenCombat::Tests::leftGripRootMotion();
+        EldenCombat::Tests::pairedAttackButtons();
+        EldenCombat::Tests::pairedContactOwnership();
+        EldenCombat::Tests::pairedJumpContacts();
+        EldenCombat::Tests::pairedMisses();
         std::unique_ptr<EldenCombat::AnimationBank> animations;
         if (argc > 1)
         {
             std::ifstream stream(argv[1], std::ios::binary);
             check(static_cast<bool>(stream), "cannot open local animation bank");
             animations = std::make_unique<EldenCombat::AnimationBank>(stream);
+            for (const auto from : { EldenCombat::Grip::OneHand, EldenCombat::Grip::TwoHandRight,
+                     EldenCombat::Grip::TwoHandLeft })
+                for (const auto to : { EldenCombat::Grip::OneHand, EldenCombat::Grip::TwoHandRight,
+                         EldenCombat::Grip::TwoHandLeft })
+                {
+                    EldenCombat::GripTransition swap;
+                    swap.start(from, to);
+                    while (swap.active())
+                    {
+                        const auto pose = swap.pose();
+                        const auto* clip = animations->find(pose.mAnimation);
+                        check(clip && pose.mFrame <= clip->mFrames - 1 + .001f,
+                            "grip transition outlasts or lacks its actual bank clip");
+                        swap.advance(EldenCombat::TickSeconds);
+                    }
+                }
+        }
+        {
+            EldenCombat::Config spear;
+            spear.mWeaponClass = EldenCombat::WeaponClass::Spear;
+            const auto thrust = EldenCombat::Controller::actionDefinition(EldenCombat::Action::SpearThrust, spear, true);
+            validate(thrust);
+            const auto guarded = EldenCombat::Controller::actionDefinition(EldenCombat::Action::GuardThrust, spear);
+            validate(guarded);
+            check(!thrust.mAnimation.empty() && thrust.mHitCount == 1, "missing imported quick spear thrust");
+            if (animations)
+            {
+                const auto* clip = animations->find(thrust.mAnimation);
+                check(clip != nullptr, "baked bank is missing the quick spear thrust");
+                check(thrust.mDuration * thrust.mAnimationSpeed <= clip->mFrames - 1 + .001f,
+                    "quick spear thrust outlasts its imported clip");
+                check(thrust.mHits[0].mTo * thrust.mAnimationSpeed <= clip->mFrames - 1 + .001f,
+                    "quick spear thrust damage outlasts its imported clip");
+                const auto* guardedClip = animations->find(guarded.mAnimation);
+                check(guardedClip && guarded.mDuration * guarded.mAnimationSpeed <= guardedClip->mFrames - 1 + .001f,
+                    "shield poke outlasts or lacks its one-handed spear clip");
+            }
         }
         std::size_t definitions = 0;
         std::size_t movesets = 0;
@@ -187,16 +294,19 @@ int main(int argc, char** argv)
             for (const bool twoHanded : { false, true })
             {
                 if (animations)
+                {
                     for (unsigned int id : { 0u, 100u })
                         check(animations->find(EldenCombat::stanceAnimation(
                             static_cast<EldenCombat::WeaponClass>(weapon), twoHanded, id)) != nullptr,
                             "baked bank is missing an imported weapon stance");
+                    locomotion(*animations, static_cast<EldenCombat::WeaponClass>(weapon), twoHanded);
+                }
                 for (const float speed : { 0.75f, 1.f, 1.3f })
                 {
                     EldenCombat::Config config;
                     config.mWeaponClass = static_cast<EldenCombat::WeaponClass>(weapon);
                     config.mLeftWeaponClass = config.mWeaponClass;
-                    config.mSpeedMultiplier = speed;
+                    config.mSpeedMultiplier = config.mLeftSpeedMultiplier = speed;
                     for (int action = static_cast<int>(EldenCombat::Action::Light1);
                          action < static_cast<int>(EldenCombat::Action::Dead); ++action)
                     {

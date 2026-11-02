@@ -1,4 +1,5 @@
 #include "combat.hpp"
+#include "timingdata.hpp"
 
 #ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
 #include "imported_timings.hpp"
@@ -9,11 +10,50 @@
 #include <initializer_list>
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace EldenCombat
 {
     namespace
     {
+        std::optional<ActionDef> localActionDefinition(Action action, const Config& config, bool twoHanded)
+        {
+            if (const auto data = runtimeTimings())
+                return data->actionDefinition(action, config, twoHanded);
+#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
+            return importedActionDefinition(action, config, twoHanded);
+#else
+            return std::nullopt;
+#endif
+        }
+
+        bool localHasWeaponMoveset(WeaponClass weapon, bool twoHanded)
+        {
+            if (const auto data = runtimeTimings())
+                return data->hasWeaponMoveset(weapon, twoHanded);
+#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
+            return importedHasWeaponMoveset(weapon, twoHanded);
+#else
+            return false;
+#endif
+        }
+
+        bool localHasAction(Action action, const Config& config, bool twoHanded)
+        {
+            return localActionDefinition(action, config, twoHanded).has_value();
+        }
+
+        unsigned int localStanceCategory(WeaponClass weapon, bool twoHanded)
+        {
+            if (const auto data = runtimeTimings())
+                return data->stanceCategory(weapon, twoHanded);
+#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
+            return importedStanceCategory(weapon, twoHanded);
+#else
+            return 0;
+#endif
+        }
+
         constexpr float Never = 9999.f;
         constexpr float SprintHoldFrames = 10.f;
         constexpr float SprintGroundGraceSeconds = 0.12f;
@@ -85,21 +125,16 @@ namespace EldenCombat
 
         Action selectAttack(std::initializer_list<Action> choices, const Config& config, bool twoHanded)
         {
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
             const WeaponClass weapon = leftAction(*choices.begin()) ? config.mLeftWeaponClass : config.mWeaponClass;
-            if (importedHasWeaponMoveset(weapon, twoHanded))
+            if (localHasWeaponMoveset(weapon, twoHanded))
             {
                 // The source selects the first move this weapon actually has.
                 // A missing action in a known moveset must not invent a new attack.
                 for (const Action action : choices)
-                    if (importedHasAction(action, config, twoHanded))
+                    if (localHasAction(action, config, twoHanded))
                         return action;
                 return Action::Idle;
             }
-#else
-            (void)config;
-            (void)twoHanded;
-#endif
             return *choices.begin();
         }
 
@@ -119,6 +154,95 @@ namespace EldenCombat
             return std::isfinite(value) ? std::max(0.f, value) : fallback;
         }
 
+        float validatedRollDistance(float value, float fallback)
+        {
+            return std::clamp(std::isfinite(value) ? value : fallback, 0.1f, 20.f);
+        }
+
+        const NativeAttackTiming* nativeAttack(const Config& config)
+        {
+            if (!config.mNativeAttack)
+                return nullptr;
+            const auto& timing = *config.mNativeAttack;
+            if (timing.mAnimation.empty() || !std::isfinite(timing.mDuration) || timing.mDuration <= 0.f
+                || !std::isfinite(timing.mHitFrame) || timing.mHitFrame < 0.f || timing.mHitFrame > timing.mDuration)
+                return nullptr;
+            return &timing;
+        }
+
+        Action nativeAction(Action action, const Config& config)
+        {
+            if (nativeAttack(config))
+            {
+                if (action == Action::Heavy1Charge)
+                    return Action::Heavy1;
+                if (action == Action::Heavy2Charge)
+                    return Action::Heavy2;
+            }
+            return action;
+        }
+
+        void configureNativeAttack(ActionDef& definition, Action action, const Config& config)
+        {
+            const auto* timing = nativeAttack(config);
+            if (!timing || !Controller::isAttack(action))
+                return;
+            Hit hit = definition.mHitCount > 0 ? definition.mHits[0] : Hit{};
+            hit.mFrom = hit.mTo = timing->mHitFrame;
+            definition.mHits = {};
+            definition.mHits[0] = hit;
+            definition.mHitCount = 1;
+            definition.mAnimation.clear();
+            definition.mNativeAnimation = timing->mAnimation;
+            definition.mAnimationSpeed = 1.f;
+            definition.mDuration = timing->mDuration;
+            definition.mInputFrom = definition.mDodgeInputFrom = std::max(0.f, timing->mDuration - 8.f);
+            definition.mCancelLight = definition.mCancelHeavy = definition.mCancelLeft = timing->mDuration;
+            definition.mCancelDodge = definition.mCancelJump = definition.mCancelGuard
+                = definition.mCancelMove = timing->mDuration;
+            definition.mInvincibleFrom = definition.mInvincibleTo = 0.f;
+            definition.mChargeFrom = definition.mChargeTo = 0.f;
+            definition.mDistance = 0.f;
+            definition.mRootMotion.clear();
+            definition.mRootMotionSpeed = 1.f;
+            definition.mLanding.reset();
+            definition.mLandingShort.reset();
+        }
+
+        void configureDodgeCost(ActionDef& definition, Action action, const Config& config)
+        {
+            if (dodgeAction(action))
+                definition.mStartCost *= std::clamp(nonnegative(config.mDodgeStaminaMultiplier, 1.f), 0.f, 3.f);
+        }
+
+        void configureRollDistance(ActionDef& definition, Action action, const Config& config)
+        {
+            if (!config.mWeightBasedRollDistance || (action != Action::Roll && action != Action::CrouchRoll))
+                return;
+
+            const float distance = Controller::rollDistance(config);
+            if (!definition.mRootMotion.empty())
+            {
+                const auto origin = Controller::rootMotionAt(definition, 0.f);
+                const auto endpoint = Controller::rootMotionAt(definition, definition.mDuration);
+                const float originalDistance = std::hypot(endpoint[0] - origin[0], endpoint[2] - origin[2]);
+                if (std::isfinite(originalDistance) && originalDistance > 0.00001f)
+                {
+                    const float scale = distance / originalDistance;
+                    for (auto& sample : definition.mRootMotion)
+                    {
+                        sample[0] = origin[0] + (sample[0] - origin[0]) * scale;
+                        sample[2] = origin[2] + (sample[2] - origin[2]) * scale;
+                    }
+                }
+                else
+                    // A stationary or malformed curve cannot supply horizontal travel.
+                    // Use the normal fallback curve with the configured distance instead.
+                    definition.mRootMotion.clear();
+            }
+            definition.mDistance = distance;
+        }
+
         float motionFraction(float frame, const ActionDef& definition)
         {
             // OpenMW uses its own physics and animation assets. This interpolation is a
@@ -131,9 +255,18 @@ namespace EldenCombat
         }
     }
 
+    void Input::resetKeepingGrip()
+    {
+        const bool twoHanded = mTwoHanded;
+        const bool twoHandedLeft = mTwoHandedLeft;
+        *this = {};
+        mTwoHanded = twoHanded;
+        mTwoHandedLeft = twoHandedLeft;
+    }
+
     void Input::clearEdges()
     {
-        for (Button* button : { &mDodge, &mLight, &mHeavy, &mGuard, &mJump, &mCritical })
+        for (Button* button : { &mDodge, &mLight, &mHeavy, &mGuard, &mJump, &mCritical, &mSpearThrust })
         {
             button->mPressed = false;
             button->mReleased = false;
@@ -146,21 +279,54 @@ namespace EldenCombat
     {
     }
 
+    float poiseFromStats(const PoiseStats& stats)
+    {
+        const float endurance = nonnegative(stats.mEndurance);
+        const float strength = nonnegative(stats.mStrength);
+        float poise = std::max(0.f, endurance - 40.f) * 0.12f
+            + std::max(0.f, strength - 40.f) * 0.06f;
+        if (stats.mCreature)
+        {
+            const float health = nonnegative(stats.mHealth);
+            // Some small creatures have unusually high Endurance. Their actual
+            // health keeps rats and similar weak enemies easy to interrupt.
+            poise *= std::min(1.f, health / 100.f);
+            poise += std::min(20.f, std::sqrt(std::max(0.f, health - 100.f)) * 0.5f);
+            poise += std::min(10.f, std::max(0.f, nonnegative(stats.mLevel) - 10.f) * 0.15f);
+        }
+        else
+            poise += std::min(20.f, nonnegative(stats.mArmorRating) * 0.2f);
+        return std::clamp(poise, 0.f, 45.f);
+    }
+
     void Controller::configure(const Config& config)
     {
         const float previousMaximumStance = mConfig.mMaximumStance;
+        const float previousMaximumPoise = mConfig.mMaximumPoise;
         mConfig = config;
         mConfig.mMaximumStamina = nonnegative(config.mMaximumStamina, 100.f);
         mConfig.mMaximumStance = std::max(1.f, nonnegative(config.mMaximumStance, 60.f));
+        mConfig.mMaximumPoise = nonnegative(config.mMaximumPoise);
+        mConfig.mPoiseRecoveryDelay = std::clamp(nonnegative(config.mPoiseRecoveryDelay, 2.5f), 0.25f, 10.f);
         mConfig.mStaminaRegen = nonnegative(config.mStaminaRegen, 45.f);
         mConfig.mGuardRegenMultiplier = nonnegative(config.mGuardRegenMultiplier, 0.5f);
         mConfig.mSprintDrain = nonnegative(config.mSprintDrain, 11.f);
         mConfig.mGuardStaminaTaken = nonnegative(config.mGuardStaminaTaken, 0.55f);
         mConfig.mSpeedMultiplier = std::clamp(nonnegative(config.mSpeedMultiplier, 1.f), 0.1f, 5.f);
+        mConfig.mLeftSpeedMultiplier = std::clamp(nonnegative(config.mLeftSpeedMultiplier, 1.f), 0.1f, 5.f);
+        mConfig.mLightRollDistance = validatedRollDistance(config.mLightRollDistance, 4.33f);
+        mConfig.mMediumRollDistance = validatedRollDistance(config.mMediumRollDistance, 3.65f);
+        mConfig.mHeavyRollDistance = validatedRollDistance(config.mHeavyRollDistance, 3.31f);
+        mConfig.mDodgeStaminaMultiplier = std::clamp(nonnegative(config.mDodgeStaminaMultiplier, 1.f), 0.f, 3.f);
         mConfig.mPostHitProtectionSeconds = nonnegative(config.mPostHitProtectionSeconds);
         mStamina = std::clamp(mStamina, 0.f, mConfig.mMaximumStamina);
         mStance = std::clamp(mStance * mConfig.mMaximumStance / std::max(1.f, previousMaximumStance), 0.f,
             mConfig.mMaximumStance);
+        // The world adapter configures every frame and before contacts. Preserve
+        // the remaining fraction when equipment/stat modifiers change.
+        mPoise = previousMaximumPoise > 0.f
+            ? std::clamp(mPoise * mConfig.mMaximumPoise / previousMaximumPoise, 0.f, mConfig.mMaximumPoise)
+            : mConfig.mMaximumPoise;
         // An equipment change does not alter the definition of an action already underway.
     }
 
@@ -172,7 +338,32 @@ namespace EldenCombat
 
     bool Controller::isAttack(Action action)
     {
-        return (action >= Action::Light1 && action <= Action::PairedJump) || action == Action::Critical;
+        return (action >= Action::Light1 && action <= Action::GuardThrust) || action == Action::Critical;
+    }
+
+    Load Controller::loadFromRatio(float ratio, float lightThreshold, float heavyThreshold)
+    {
+        lightThreshold = std::clamp(std::isfinite(lightThreshold) ? lightThreshold : 0.3f, 0.f, 1.f);
+        heavyThreshold = std::clamp(std::isfinite(heavyThreshold) ? heavyThreshold : 0.7f, 0.f, 1.f);
+        if (lightThreshold > heavyThreshold)
+            std::swap(lightThreshold, heavyThreshold);
+        if (!std::isfinite(ratio))
+            return Load::Heavy;
+        ratio = std::max(0.f, ratio);
+        return ratio < lightThreshold ? Load::Light : (ratio < heavyThreshold ? Load::Medium : Load::Heavy);
+    }
+
+    float Controller::rollDistance(const Config& config)
+    {
+        switch (config.mLoad)
+        {
+            case Load::Light:
+                return validatedRollDistance(config.mLightRollDistance, 4.33f);
+            case Load::Heavy:
+                return validatedRollDistance(config.mHeavyRollDistance, 3.31f);
+            default:
+                return validatedRollDistance(config.mMediumRollDistance, 3.65f);
+        }
     }
 
     std::array<float, 3> Controller::rootMotionAt(const ActionDef& definition, float frame)
@@ -192,15 +383,14 @@ namespace EldenCombat
         return result;
     }
 
+    bool hasImportedWeaponMoveset(WeaponClass weapon, bool twoHanded)
+    {
+        return localHasWeaponMoveset(weapon, twoHanded);
+    }
+
     std::string stanceAnimation(WeaponClass weapon, bool twoHanded, unsigned int animationId)
     {
-        unsigned int category = 0;
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        category = importedStanceCategory(weapon, twoHanded);
-#else
-        (void)weapon;
-        (void)twoHanded;
-#endif
+        const unsigned int category = localStanceCategory(weapon, twoHanded);
         std::ostringstream name;
         name << 'a' << std::setfill('0') << std::setw(3) << category << '_' << std::setw(6) << animationId;
         return name.str();
@@ -208,10 +398,59 @@ namespace EldenCombat
 
     ActionDef Controller::actionDefinition(Action action, const Config& config, bool twoHanded)
     {
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        if (const std::optional<ActionDef> imported = importedActionDefinition(action, config, twoHanded))
-            return *imported;
-#endif
+        if (leftAction(action) && config.mSpeedMultiplier != config.mLeftSpeedMultiplier)
+        {
+            Config left = config;
+            left.mSpeedMultiplier = left.mLeftSpeedMultiplier
+                = std::clamp(nonnegative(config.mLeftSpeedMultiplier, 1.f), 0.1f, 5.f);
+            return actionDefinition(action, left, twoHanded);
+        }
+        action = nativeAction(action, config);
+        if (action == Action::GuardThrust)
+        {
+            // The supplied bank has no separate shield-poke action. Keep the
+            // authored one-handed spear thrust and its cost/contact clock,
+            // with a shield-arm overlay supplied by guardAnimation().
+            ActionDef result = actionDefinition(Action::Light1, config, false);
+            result.mHitCount = std::min<std::size_t>(result.mHitCount, 1);
+            result.mRootMotion.clear();
+            result.mDistance = 0.f;
+            return result;
+        }
+        if (action == Action::SpearThrust)
+        {
+            // An authored quick thrust using the existing two-handed spear
+            // opener. The same speed scales pose, contact and root motion.
+            // No charge restart, extra damage callback, or new asset is needed.
+            Config thrust = config;
+            thrust.mWeaponClass = WeaponClass::Spear;
+            thrust.mNativeAttack.reset();
+            thrust.mSpeedMultiplier = std::clamp(nonnegative(config.mSpeedMultiplier, 1.f) * 1.6f, 0.1f, 5.f);
+            ActionDef result = actionDefinition(Action::Light1, thrust, true);
+            result.mHitCount = std::min<std::size_t>(result.mHitCount, 1);
+            result.mInputFrom = result.mDodgeInputFrom = result.mDuration;
+            result.mCancelLight = result.mCancelHeavy = result.mCancelLeft = result.mCancelMove
+                = result.mCancelGuard = result.mCancelJump = result.mCancelDodge = result.mDuration;
+            return result;
+        }
+        if (action == Action::Deflected)
+        {
+            ActionDef result;
+            // A repelled weapon has no damage, travel or new stamina charge.
+            // Its recovery cannot be cancelled by the interrupted combo.
+            result.mDuration = 18.f;
+            result.mInputFrom = result.mDodgeInputFrom = 12.f;
+            result.mCancelLight = result.mCancelHeavy = result.mCancelLeft = result.mCancelMove
+                = result.mCancelGuard = result.mCancelJump = result.mCancelDodge = result.mDuration;
+            return result;
+        }
+        if (std::optional<ActionDef> imported = localActionDefinition(action, config, twoHanded))
+        {
+            configureRollDistance(*imported, action, config);
+            configureDodgeCost(*imported, action, config);
+            configureNativeAttack(*imported, action, config);
+            return std::move(*imported);
+        }
         ActionDef result;
         result.mDuration = 60.f;
         result.mInputFrom = 10.f;
@@ -328,6 +567,7 @@ namespace EldenCombat
                 result.mHits[1].mTo += 4.f / speed;
                 result.mHitCount = 2;
             }
+            configureNativeAttack(result, action, config);
             return result;
         }
 
@@ -418,6 +658,8 @@ namespace EldenCombat
                 result.mDodgeInputFrom = 57.f;
             }
         }
+        configureRollDistance(result, action, config);
+        configureDodgeCost(result, action, config);
         return result;
     }
 
@@ -434,6 +676,13 @@ namespace EldenCombat
         return !input.mTwoHanded && !mConfig.mHasShield && mConfig.mHasLeftWeapon;
     }
 
+    bool Controller::canGuardThrust(const Input& input) const
+    {
+        return !input.mHandsBusy && input.mGuard.mHeld && mConfig.mHasShield && !input.mTwoHanded && !mConfig.mNativeAttack
+            && (input.mGrounded || input.mFlying)
+            && (mConfig.mWeaponClass == WeaponClass::Spear || mConfig.mWeaponClass == WeaponClass::GreatSpear);
+    }
+
     void Controller::readButtons(const Input& input, float frames)
     {
         const auto buffer = [&](Request request) {
@@ -445,13 +694,13 @@ namespace EldenCombat
         if (input.mDodge.mPressed)
         {
             mDodgeHoldFrames = 0.f;
-            mDodgeArmed = true;
+            mDodgeArmed = !input.mFlying;
         }
         if (input.mDodge.mHeld)
             mDodgeHoldFrames += frames;
         if (input.mDodge.mReleased)
         {
-            if (mDodgeArmed && mDodgeHoldFrames < SprintHoldFrames && dodgeListening)
+            if (!input.mFlying && mDodgeArmed && mDodgeHoldFrames < SprintHoldFrames && dodgeListening)
                 buffer(Request::Dodge);
             mDodgeArmed = false;
             mDodgeHoldFrames = 0.f;
@@ -462,7 +711,7 @@ namespace EldenCombat
         if (!listening)
             return;
         // One slot, newest input wins, matching the Rust state machine.
-        if (input.mJump.mPressed)
+        if (input.mJump.mPressed && !input.mFlying)
             buffer(Request::Jump);
         if (input.mHeavy.mPressed)
             buffer(Request::Heavy);
@@ -472,28 +721,40 @@ namespace EldenCombat
             buffer(Request::Light);
         if (input.mCritical.mPressed && input.mCriticalAvailable)
             buffer(Request::Critical);
+        // A boss art can only start from idle. Do not buffer one into an
+        // unrelated recovery, change its contextual opener, or chain it.
+        if (input.mSpearThrust.mPressed && input.mAIControlled && input.mInCombat
+            && input.mGrounded && !input.mFlying && input.mTwoHanded
+            && mConfig.mWeaponClass == WeaponClass::Spear && !mConfig.mNativeAttack
+            && mAction == Action::Idle)
+            buffer(Request::SpearThrust);
     }
 
     void Controller::start(Action action, const Input& input, Update* result)
     {
-        const bool resumeGuard = mAction == Action::GuardHit && action == Action::Idle;
+        action = nativeAction(action, mConfig);
+        const bool resumeGuard = (mAction == Action::GuardHit || mAction == Action::GuardThrust)
+            && action == Action::Idle;
+        const bool thrustGuard = action == Action::GuardThrust && canGuardThrust(input);
         if (action == Action::Jump && result)
             result->mJumpMovementMultiplier = mSprinting ? 1.504f : 1.f;
         mAction = action;
         mTwoHanded = input.mTwoHanded;
         mTwoHandedLeft = input.mTwoHanded && input.mTwoHandedLeft;
+        mMirrorAttackRootMotion = isAttack(action) && mTwoHandedLeft && mConfig.mWeaponClass != WeaponClass::Shield;
         mDef = actionDefinition(action, mConfig, mTwoHanded);
         mJumpWasAirborne = !input.mGrounded && (action == Action::Jump || mDef.mLanding);
         mFrame = 0.f;
         mPaidHits = 0;
         mLandedHits = 0;
+        mDeferredHits = 0;
         ++mSequence;
         mSprinting = false;
         mSprintGroundGraceRemaining = 0.f;
         // Guard recoil has its own recovery; a block does not keep the guard
         // active after its button is released or through the recoil window.
-        mGuarding = false;
-        if (action != Action::GuardHit && !resumeGuard)
+        mGuarding = thrustGuard || (resumeGuard && canGuardThrust(input));
+        if (action != Action::GuardHit && !resumeGuard && !thrustGuard)
             mGuardFrames = 0.f;
         spend(mDef.mStartCost, result);
         // Jump swings pay as soon as they are initiated, as the source's AirAttack does.
@@ -507,6 +768,17 @@ namespace EldenCombat
         }
         if (action == Action::GuardCounter)
             mGuardCounterFrames = 0.f;
+        if (!mDef.mNativeAnimation.empty() && mDef.mHits[0].mFrom == 0.f)
+        {
+            // Creatures without an explicit hit key strike on the native start
+            // key. Keep that event in this update, including a zero-length window.
+            if ((mPaidHits & 1u) == 0)
+            {
+                spend(mDef.mHits[0].mStaminaCost, result);
+                mPaidHits |= 1u;
+            }
+            collectHits(-1.f);
+        }
         if (result)
         {
             result->mActionChanged = true;
@@ -517,26 +789,24 @@ namespace EldenCombat
 
     Action Controller::nextLight() const
     {
-        if (!mGrounded || mAction == Action::Jump)
+        if (!mFlying && (!mGrounded || mAction == Action::Jump))
             return Action::JumpLight;
-        if (mAction == Action::Roll || mAction == Action::CrouchRoll)
+        if (!mFlying && (mAction == Action::Roll || mAction == Action::CrouchRoll))
             return selectAttack({ Action::RollAttack, Action::Light1 }, mConfig, mTwoHanded);
-        if (mAction == Action::Backstep)
+        if (!mFlying && mAction == Action::Backstep)
             return selectAttack({ Action::BackstepAttack, Action::Light1 }, mConfig, mTwoHanded);
         if (lightOpener(mAction))
             return selectAttack({ Action::Light2, Action::Light1 }, mConfig, mTwoHanded);
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        if (importedActionDefinition(Action::Light1, mConfig, mTwoHanded))
+        if (localActionDefinition(Action::Light1, mConfig, mTwoHanded))
         {
             if (mAction >= Action::Light1 && mAction < Action::Light6)
             {
                 const Action next = static_cast<Action>(static_cast<int>(mAction) + 1);
-                if (importedActionDefinition(next, mConfig, mTwoHanded))
+                if (localActionDefinition(next, mConfig, mTwoHanded))
                     return next;
             }
             return Action::Light1;
         }
-#endif
         const int chain = profile(mConfig.mWeaponClass).mChain;
         if (mAction >= Action::Light1 && static_cast<int>(mAction) < static_cast<int>(Action::Light1) + chain - 1)
             return static_cast<Action>(static_cast<int>(mAction) + 1);
@@ -547,41 +817,37 @@ namespace EldenCombat
     {
         if (guardCounterReady())
             return selectAttack({ Action::GuardCounter, Action::Heavy1Charge }, mConfig, mTwoHanded);
-        if (!mGrounded || mAction == Action::Jump)
+        if (!mFlying && (!mGrounded || mAction == Action::Jump))
             return Action::JumpHeavy;
         if (mAction == Action::Heavy1 || mAction == Action::Heavy1Charge)
             return selectAttack({ Action::Heavy2Charge, Action::Heavy1Charge }, mConfig, mTwoHanded);
         return selectAttack({ Action::Heavy1Charge, Action::Heavy1 }, mConfig, mTwoHanded);
     }
 
-    bool Controller::pairedWeaponsActive() const
+    bool Controller::pairedWeaponsActive(bool twoHanded) const
     {
-        if (!mConfig.mPairedWeapons || mTwoHanded)
+        if (!mConfig.mPairedWeapons || twoHanded)
             return false;
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-        if (importedHasWeaponMoveset(mConfig.mWeaponClass, false))
-            return importedHasAction(Action::PairedLight1, mConfig, false);
-#endif
+        if (localHasWeaponMoveset(mConfig.mWeaponClass, false))
+            return localHasAction(Action::PairedLight1, mConfig, false);
         return true;
     }
 
     Action Controller::nextLeft() const
     {
-        if (pairedWeaponsActive())
+        if (pairedWeaponsActive(mTwoHanded))
         {
-            if (!mGrounded || mAction == Action::Jump)
+            if (!mFlying && (!mGrounded || mAction == Action::Jump))
                 return Action::PairedJump;
-            if (mAction == Action::Roll || mAction == Action::CrouchRoll)
+            if (!mFlying && (mAction == Action::Roll || mAction == Action::CrouchRoll))
                 return selectAttack({ Action::PairedRoll, Action::PairedLight1 }, mConfig, mTwoHanded);
-            if (mAction == Action::Backstep)
+            if (!mFlying && mAction == Action::Backstep)
                 return selectAttack({ Action::PairedBackstep, Action::PairedLight1 }, mConfig, mTwoHanded);
             if (mAction >= Action::PairedLight1 && mAction < Action::PairedLight6)
             {
                 const Action next = static_cast<Action>(static_cast<int>(mAction) + 1);
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-                if (importedActionDefinition(Action::PairedLight1, mConfig, mTwoHanded))
-                    return importedActionDefinition(next, mConfig, mTwoHanded) ? next : Action::PairedLight1;
-#endif
+                if (localActionDefinition(Action::PairedLight1, mConfig, mTwoHanded))
+                    return localActionDefinition(next, mConfig, mTwoHanded) ? next : Action::PairedLight1;
                 if (static_cast<int>(next) < static_cast<int>(Action::PairedLight1) + profile(mConfig.mWeaponClass).mChain)
                     return next;
             }
@@ -590,10 +856,8 @@ namespace EldenCombat
         if (mAction >= Action::LeftLight1 && mAction < Action::LeftLight6)
         {
             const Action next = static_cast<Action>(static_cast<int>(mAction) + 1);
-#ifdef OPENMW_ELDENCOMBAT_IMPORTED_TIMINGS
-            if (importedActionDefinition(Action::LeftLight1, mConfig, mTwoHanded))
-                return importedActionDefinition(next, mConfig, mTwoHanded) ? next : Action::LeftLight1;
-#endif
+            if (localActionDefinition(Action::LeftLight1, mConfig, mTwoHanded))
+                return localActionDefinition(next, mConfig, mTwoHanded) ? next : Action::LeftLight1;
             if (static_cast<int>(next) < static_cast<int>(Action::LeftLight1) + profile(mConfig.mLeftWeaponClass).mChain)
                 return next;
         }
@@ -606,11 +870,17 @@ namespace EldenCombat
             if (action != Action::Idle)
                 start(action, input, &result);
         };
+        auto startLeftAttack = [&] {
+            startAttack(mAction == Action::Idle && input.mGrounded && !input.mFlying && mSprinting
+                    && pairedWeaponsActive(mTwoHanded)
+                    ? selectAttack({ Action::PairedRun, Action::PairedLight1 }, mConfig, mTwoHanded)
+                    : nextLeft());
+        };
         switch (request.mRequest)
         {
             case Request::Dodge:
             {
-                if (!input.mGrounded)
+                if (!input.mGrounded || input.mFlying)
                     return;
                 const auto direction = request.mDodgeDirection.value_or(std::array{ input.mMoveX, input.mMoveY });
                 const float length = std::hypot(direction[0], direction[1]);
@@ -630,30 +900,37 @@ namespace EldenCombat
                 break;
             }
             case Request::Jump:
-                if (input.mGrounded)
+                if (input.mGrounded && !input.mFlying)
                     start(Action::Jump, input, &result);
                 break;
             case Request::Light:
-                startAttack(mAction == Action::Idle && input.mGrounded && mSprinting
+                startAttack(canGuardThrust(input) && !mSprinting
+                        && (mAction == Action::Idle || mAction == Action::GuardThrust || mAction == Action::GuardHit)
+                        ? Action::GuardThrust
+                        : mAction == Action::Idle && input.mGrounded && !input.mFlying && mSprinting
                         ? selectAttack({ Action::RunLight, Action::Light1 }, mConfig, mTwoHanded)
-                        : (mAction == Action::Idle && input.mGrounded && input.mCrouching
+                        : (mAction == Action::Idle && input.mGrounded && !input.mFlying && input.mCrouching
                                 ? selectAttack({ Action::CrouchAttack, Action::RollAttack, Action::Light1 }, mConfig,
                                     mTwoHanded)
                                 : nextLight()));
                 break;
             case Request::Heavy:
-                startAttack(mAction == Action::Idle && input.mGrounded && mSprinting
+                startAttack(mAction == Action::Idle && input.mGrounded && !input.mFlying && mSprinting
                         ? selectAttack({ Action::RunHeavy, Action::Heavy1Charge }, mConfig, mTwoHanded)
                         : nextHeavy());
                 break;
             case Request::Left:
-                startAttack(mAction == Action::Idle && input.mGrounded && mSprinting && pairedWeaponsActive()
-                        ? selectAttack({ Action::PairedRun, Action::PairedLight1 }, mConfig, mTwoHanded)
-                        : nextLeft());
+                startLeftAttack();
                 break;
             case Request::Critical:
                 if (input.mCriticalAvailable)
                     start(Action::Critical, input, &result);
+                break;
+            case Request::SpearThrust:
+                if (mAction == Action::Idle && input.mAIControlled && input.mInCombat
+                    && input.mGrounded && !input.mFlying && input.mTwoHanded
+                    && mConfig.mWeaponClass == WeaponClass::Spear && !mConfig.mNativeAttack)
+                    start(Action::SpearThrust, input, &result);
                 break;
         }
     }
@@ -665,6 +942,8 @@ namespace EldenCombat
             case Request::Light:
             case Request::Critical:
                 return mDef.mCancelLight;
+            case Request::SpearThrust:
+                return mDef.mDuration;
             case Request::Heavy:
                 return mDef.mCancelHeavy;
             case Request::Left:
@@ -682,10 +961,13 @@ namespace EldenCombat
         const Hit& hit = mDef.mHits[hitIndex];
         // The fallback paired movesets alternate hands. Imported definitions can
         // explicitly identify a hand; sequence parity is an estimate when absent.
-        const bool leftHand = mTwoHandedLeft || hit.mLeftHand || leftAction(mAction)
-            || (pairedAction(mAction) && hitIndex % 2 != 0);
+        // Both physical hands use the selected inventory item in a two-hand
+        // grip (notably the extracted fist/claw movesets).
+        const bool leftHand = mTwoHanded ? mTwoHandedLeft
+            : hit.mLeftHand || leftAction(mAction)
+                || (!hit.mHasHandAssignment && pairedAction(mAction) && hitIndex % 2 != 0);
         return { mAction, mSequence, hitIndex, mDef.mStrength, hit.mDamageMultiplier, hit.mStanceDamage,
-            hit.mGuardDamage, hit.mHitStop, mTwoHanded, leftHand, pairedAction(mAction) };
+            hit.mGuardDamage, hit.mHitStop, mTwoHanded, leftHand, pairedAction(mAction), mDef.mNativeAnimation };
     }
 
     Attack Controller::attack() const
@@ -708,7 +990,7 @@ namespace EldenCombat
         }
     }
 
-    void Controller::landAttack(Update& result)
+    void Controller::landAttack(Update& result, bool preserveCrossedHits)
     {
         float hitEnd = 0.f;
         for (std::size_t index = 0; index < mDef.mHitCount; ++index)
@@ -718,14 +1000,47 @@ namespace EldenCombat
         const float airborneFrame = mFrame;
         // Keep ownership while replacing the definition that owns this phase.
         const auto landing = finished && mDef.mLandingShort ? mDef.mLandingShort : mDef.mLanding;
+        std::uint32_t landedHits = connected || finished ? ~std::uint32_t{ 0 } : 0;
+        const auto assigned = [](const ActionDef& definition) {
+            return std::all_of(definition.mHits.begin(), definition.mHits.begin() + definition.mHitCount,
+                [](const Hit& hit) { return hit.mHasHandAssignment; });
+        };
+        if (!finished && assigned(mDef) && assigned(*landing))
+        {
+            // Air and landing phases can list the hands in different orders.
+            // Match each hand's contacts in order so an airborne right hit does
+            // not consume the left hit, or replay after touchdown. An expired
+            // airborne window also stays spent even when it missed its target.
+            landedHits = 0;
+            for (std::size_t target = 0; target < landing->mHitCount; ++target)
+            {
+                const bool left = landing->mHits[target].mLeftHand;
+                std::size_t ordinal = 0;
+                for (std::size_t earlier = 0; earlier < target; ++earlier)
+                    ordinal += landing->mHits[earlier].mLeftHand == left;
+                for (std::size_t source = 0; source < mDef.mHitCount; ++source)
+                {
+                    if (mDef.mHits[source].mLeftHand != left)
+                        continue;
+                    if (ordinal > 0)
+                    {
+                        --ordinal;
+                        continue;
+                    }
+                    if ((mLandedHits & (1u << source)) != 0 || airborneFrame >= mDef.mHits[source].mTo)
+                        landedHits |= 1u << target;
+                    break;
+                }
+            }
+        }
         mDef = *landing;
         mFrame = finished ? 0.f
                           : std::min(airborneFrame, mDef.mHitCount > 0 ? mDef.mHits[0].mFrom : 0.f);
-        // This is the same paid swing and damage sequence. A connected or
-        // completed airborne swing must never deal its damage again on landing.
+        // This is the same prepaid swing and damage sequence.
         mPaidHits = ~std::uint32_t{ 0 };
-        mLandedHits = connected || finished ? ~std::uint32_t{ 0 } : 0;
-        mAvailableHitCount = 0;
+        mLandedHits = landedHits;
+        if (!preserveCrossedHits)
+            mAvailableHitCount = 0;
         mJumpWasAirborne = false;
         result.mActionChanged = true;
     }
@@ -736,11 +1051,30 @@ namespace EldenCombat
             return;
         const float frames = seconds * AnimationFps;
         mGrounded = input.mGrounded;
+        mFlying = input.mFlying;
+        if (mFlying)
+        {
+            mSprinting = false;
+            mSprintGroundGraceRemaining = 0.f;
+            mDodgeArmed = false;
+            if (mBuffer && (mBuffer->mRequest == Request::Jump || mBuffer->mRequest == Request::Dodge))
+                mBuffer.reset();
+        }
         if ((mAction == Action::Jump || mDef.mLanding) && !mGrounded)
             mJumpWasAirborne = true;
-        mSprintGroundGraceRemaining = input.mGrounded ? SprintGroundGraceSeconds
+        mSprintGroundGraceRemaining = input.mGrounded && !mFlying ? SprintGroundGraceSeconds
             : std::max(0.f, mSprintGroundGraceRemaining - seconds);
         readButtons(input, frames);
+        if (mAction == Action::GuardThrust)
+        {
+            // Guard follows the live shield/button, including during hit-stop.
+            // Releasing it never cancels an already committed spear contact.
+            mGuarding = canGuardThrust(input);
+            mGuardFrames = mGuarding ? mGuardFrames + (mHitStopSeconds > 0.f ? 0.f : frames) : 0.f;
+        }
+        mPoiseRecoveryRemaining = std::max(0.f, mPoiseRecoveryRemaining - seconds);
+        if (mPoiseRecoveryRemaining <= 0.f)
+            mPoise = mConfig.mMaximumPoise;
         if (mHitStopSeconds > 0.f)
         {
             mHitStopSeconds = std::max(0.f, mHitStopSeconds - seconds);
@@ -758,9 +1092,9 @@ namespace EldenCombat
         // jump clip finishes. Resume ground controls immediately, while
         // keeping jump attacks' recovery and pending launch pulses intact.
         // The airborne latch also retains a landing observed during hit-stop.
-        if (mAction == Action::Jump && mJumpWasAirborne && mGrounded)
+        if (mAction == Action::Jump && mJumpWasAirborne && mGrounded && !mFlying)
             start(Action::Idle, input, &result);
-        else if (mDef.mLanding && mJumpWasAirborne && mGrounded)
+        else if (mDef.mLanding && mJumpWasAirborne && mGrounded && !mFlying)
             landAttack(result);
 
         bool regenerate = false;
@@ -770,11 +1104,11 @@ namespace EldenCombat
             // update after equipping it; start() snapshots it for the attack.
             mTwoHanded = input.mTwoHanded;
             mTwoHandedLeft = input.mTwoHanded && input.mTwoHandedLeft;
-            if (mBuffer)
+            if (mBuffer && !input.mHandsBusy)
             {
                 const BufferedRequest request = *mBuffer;
                 mBuffer.reset();
-                if (mStamina > 0.f)
+                if (mStamina > 0.f || (request.mRequest == Request::Dodge && mConfig.mDodgeStaminaMultiplier == 0.f))
                 {
                     startRequest(request, input, result);
                     if (mAction != Action::Idle)
@@ -787,7 +1121,7 @@ namespace EldenCombat
             // never start a sprint in the air or relax jump/attack grounding.
             const bool sprintGrounded = input.mGrounded || (mSprinting && mSprintGroundGraceRemaining > 0.f);
             mSprinting = (input.mSprint || (input.mDodge.mHeld && mDodgeHoldFrames >= SprintHoldFrames))
-                && moving && sprintGrounded && !mSprintSpent && mStamina > 0.f;
+                && moving && sprintGrounded && !mFlying && !mSprintSpent && !input.mHandsBusy && mStamina > 0.f;
             if (mSprinting && input.mInCombat)
             {
                 spend(mConfig.mSprintDrain * seconds, &result);
@@ -797,10 +1131,10 @@ namespace EldenCombat
                     mSprintSpent = true;
                 }
             }
-            mGuarding = input.mGuard.mHeld && !mSprinting && input.mGrounded
+            mGuarding = !input.mHandsBusy && input.mGuard.mHeld && !mSprinting && (mGrounded || mFlying)
                 && (mConfig.mHasShield || input.mTwoHanded) && !leftButtonAttacks(input);
             mGuardFrames = mGuarding ? mGuardFrames + frames : 0.f;
-            regenerate = !mSprinting && input.mGrounded;
+            regenerate = !mSprinting && (mGrounded || mFlying);
         }
         else
         {
@@ -822,7 +1156,7 @@ namespace EldenCombat
                 }
             }
             collectHits(previousFrame);
-            if (!mDef.mRootMotion.empty() && mGrounded && mAction != Action::Jump)
+            if (!mDef.mRootMotion.empty() && mGrounded && !mFlying && mAction != Action::Jump)
             {
                 const auto before = rootMotionAt(mDef, previousFrame);
                 const auto after = rootMotionAt(mDef, mFrame);
@@ -842,27 +1176,34 @@ namespace EldenCombat
                 }
                 else
                 {
-                    result.mDisplacementX += right;
+                    result.mDisplacementX += mMirrorAttackRootMotion ? -right : right;
                     result.mDisplacementY += forward;
                 }
             }
-            else if (dodgeAction(mAction) && mGrounded)
+            else if (dodgeAction(mAction) && mGrounded && !mFlying)
             {
                 const float distance = mDef.mDistance * (motionFraction(mFrame, mDef) - motionFraction(previousFrame, mDef));
                 result.mDisplacementX += mDodgeX * distance;
                 result.mDisplacementY += mDodgeY * distance;
             }
+            // Levitation can start during an aerial swing. Finish its authored
+            // phase, then recover without waiting indefinitely for touchdown.
+            // Slow updates may cross the last hit and the end of the clip in
+            // one call; retain those hits for the adapter to consume afterward.
+            if (mFlying && mDef.mLanding && mFrame >= mDef.mDuration)
+                landAttack(result, true);
             // An imported aerial swing holds its pose until native physics
             // reports landing. Ground recovery and buffered cancels begin there.
             const bool airborneAttack = static_cast<bool>(mDef.mLanding);
             // Replacing Jump before physics consumes its launch pulse would
             // cancel that pulse and strand an aerial attack on the ground.
-            const bool waitingForTakeoff = mAction == Action::Jump && !mJumpWasAirborne;
-            if (!airborneAttack && !waitingForTakeoff && mBuffer && mFrame >= cancelFrame(mBuffer->mRequest))
+            const bool waitingForTakeoff = mAction == Action::Jump && !mJumpWasAirborne && !mFlying;
+            if (!airborneAttack && !waitingForTakeoff && !input.mHandsBusy
+                && mBuffer && mFrame >= cancelFrame(mBuffer->mRequest))
             {
                 const BufferedRequest request = *mBuffer;
                 mBuffer.reset();
-                if (mStamina > 0.f)
+                if (mStamina > 0.f || (request.mRequest == Request::Dodge && mConfig.mDodgeStaminaMultiplier == 0.f))
                 {
                     const std::uint64_t previousSequence = mSequence;
                     startRequest(request, input, result);
@@ -870,7 +1211,7 @@ namespace EldenCombat
                         return;
                 }
             }
-            regenerate = !airborneAttack && mFrame >= mDef.mCancelMove && input.mGrounded;
+            regenerate = !airborneAttack && mFrame >= mDef.mCancelMove && (mGrounded || mFlying);
             if (!airborneAttack
                 && ((input.mGuard.mHeld && !leftButtonAttacks(input) && mFrame >= mDef.mCancelGuard)
                     || (std::hypot(input.mMoveX, input.mMoveY) >= StickDeadzone && mFrame >= mDef.mCancelMove)
@@ -891,6 +1232,7 @@ namespace EldenCombat
     {
         Update result;
         mAvailableHitCount = 0;
+        mDeferredHits = 0;
         // Protection follows simulation time, including hit-stop, rather than
         // animation time. Paused menus supply zero time and retain the remainder.
         advanceHitProtection(seconds);
@@ -930,7 +1272,7 @@ namespace EldenCombat
         for (std::size_t index = 0; index < mDef.mHitCount; ++index)
         {
             const Hit& hit = mDef.mHits[index];
-            if (mFrame >= hit.mFrom && mFrame < hit.mTo && (mLandedHits & (1u << index)) == 0)
+            if (mFrame >= hit.mFrom && mFrame < hit.mTo && ((mLandedHits | mDeferredHits) & (1u << index)) == 0)
                 return makeAttack(index);
         }
         return std::nullopt;
@@ -943,6 +1285,20 @@ namespace EldenCombat
             return;
         if (active->mSequence == mSequence)
             mLandedHits |= 1u << active->mHitIndex;
+        if (mAvailableHitCount > 0)
+        {
+            std::move(mAvailableHits.begin() + 1, mAvailableHits.begin() + mAvailableHitCount, mAvailableHits.begin());
+            --mAvailableHitCount;
+        }
+    }
+
+    void Controller::deferHit()
+    {
+        const std::optional<Attack> active = activeHit();
+        if (!active)
+            return;
+        if (active->mSequence == mSequence)
+            mDeferredHits |= 1u << active->mHitIndex;
         if (mAvailableHitCount > 0)
         {
             std::move(mAvailableHits.begin() + 1, mAvailableHits.begin() + mAvailableHitCount, mAvailableHits.begin());
@@ -983,27 +1339,50 @@ namespace EldenCombat
                 mAvailableHitCount = 0;
                 return HitResult::GuardBroken;
             }
-            start(Action::GuardHit, input);
             mGuardCounterFrames = GuardCounterFrames;
+            // Shield pokes may absorb a block while the right arm finishes its
+            // thrust. Preserve its clock, prepaid hit and buffered follow-up;
+            // guard break above still interrupts everything immediately.
+            if (mAction == Action::GuardThrust)
+                return HitResult::Blocked;
+            start(Action::GuardHit, input);
             mAvailableHitCount = 0;
             return HitResult::Blocked;
         }
 
         protectAfterHit(hit.mDamage);
         mSinceHitSeconds = 0.f;
-        mBuffer.reset();
-        mAvailableHitCount = 0;
         if (mConfig.mAllowStanceBreak && !hit.mCritical)
         {
             mStance -= nonnegative(hit.mStanceDamage);
             if (mStance <= 0.f)
             {
                 mStance = mConfig.mMaximumStance;
+                mPoise = mConfig.mMaximumPoise;
+                mPoiseRecoveryRemaining = mConfig.mPoiseRecoveryDelay;
                 mCriticalSeconds = 1.6f;
+                mBuffer.reset();
+                mAvailableHitCount = 0;
                 start(Action::StanceBreak, input);
                 return HitResult::StanceBroken;
             }
         }
+        if (mConfig.mMaximumPoise > 0.f)
+        {
+            const bool damaging = nonnegative(hit.mDamage) > 0.f;
+            const float impact = damaging ? nonnegative(hit.mStanceDamage) : 0.f;
+            if (damaging)
+                mPoiseRecoveryRemaining = mConfig.mPoiseRecoveryDelay;
+            mPoise = std::max(0.f, mPoise - impact);
+            if (!hit.mCritical && hit.mLevel != HurtLevel::Knockdown && mPoise > 0.f)
+                // Damage and stance loss still apply. Preserve the attack's
+                // frame, queued follow-up and crossed hit windows so an enemy
+                // can finish its swing through a weak hit.
+                return HitResult::Hit;
+            mPoise = mConfig.mMaximumPoise;
+        }
+        mBuffer.reset();
+        mAvailableHitCount = 0;
         // Like the source simulation, aerial hits do not force a ground reaction.
         if (mGrounded)
         {
@@ -1025,6 +1404,31 @@ namespace EldenCombat
             start(action, input);
         }
         return HitResult::Hit;
+    }
+
+    bool Controller::deflectHit(const Attack& hit)
+    {
+        const auto pending = activeHit();
+        if (!pending || pending->mSequence != hit.mSequence || pending->mHitIndex != hit.mHitIndex
+            || mAction == Action::Dead || hit.mTwoHanded || !hit.mNativeAnimation.empty())
+            return false;
+        // Rebound ordinary one-handed light chains. Two-handed, heavy and
+        // contextual attacks keep their stronger follow-through. Native
+        // creature swings retain authored recovery, never a humanoid recoil.
+        const Action action = pending->mAction;
+        if (!((action >= Action::Light1 && action <= Action::Light6)
+                || (action >= Action::LeftLight1 && action <= Action::LeftLight6)
+                || (action >= Action::PairedLight1 && action <= Action::PairedLight6)))
+            return false;
+        Input input;
+        input.mGrounded = mGrounded;
+        input.mFlying = mFlying;
+        input.mTwoHanded = hit.mTwoHanded;
+        input.mTwoHandedLeft = hit.mTwoHanded && hit.mLeftHand;
+        clearRequests();
+        mAvailableHitCount = 0;
+        start(Action::Deflected, input);
+        return true;
     }
 
     void Controller::applyHitStop(float seconds)
@@ -1090,6 +1494,8 @@ namespace EldenCombat
             mHitStopSeconds = 0.f;
             mPostHitProtectionRemaining = 0.f;
             mCriticalSeconds = 0.f;
+            mPoise = 0.f;
+            mPoiseRecoveryRemaining = 0.f;
         }
         else if (mAction == Action::Dead)
             reset();

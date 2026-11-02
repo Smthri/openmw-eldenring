@@ -18,6 +18,10 @@
 
 namespace MWPhysics
 {
+    namespace
+    {
+        std::atomic<std::uint64_t> sNextCollisionId{ 1 };
+    }
 
     Actor::Actor(const MWWorld::Ptr& ptr, const Resource::BulletShape& shape, PhysicsTaskScheduler* scheduler,
         bool canWaterWalk, DetourNavigator::CollisionShapeType collisionShapeType)
@@ -30,6 +34,7 @@ namespace MWPhysics
         , mStuckFrames(0)
         , mLastStuckPosition{ 0, 0, 0 }
         , mForce(0.f, 0.f, 0.f)
+        , mCollisionId(sNextCollisionId.fetch_add(1, std::memory_order_relaxed))
         , mOnGround(ptr.getClass().getCreatureStats(ptr).getFallHeight() == 0)
         , mOnSlope(false)
         , mInternalCollisionMode(true)
@@ -123,6 +128,8 @@ namespace MWPhysics
     void Actor::enableCollisionMode(bool collision)
     {
         mInternalCollisionMode = collision;
+        if (!collision)
+            clearActorPassThrough();
     }
 
     void Actor::enableCollisionBody(bool collision)
@@ -130,6 +137,8 @@ namespace MWPhysics
         if (mExternalCollisionMode != collision)
         {
             mExternalCollisionMode = collision;
+            if (!collision)
+                setPassThroughPlayerId(0);
             updateCollisionMask();
         }
     }
@@ -166,6 +175,9 @@ namespace MWPhysics
         mSkipSimulation = true;
         mLandingMovement.reset();
         ++mLandingMovementGeneration;
+        mActorPassThrough.reset();
+        ++mActorPassThroughGeneration;
+        mMovementIntent = false;
     }
 
     void Actor::setSimulationPosition(const osg::Vec3f& position)
@@ -220,6 +232,8 @@ namespace MWPhysics
         mPositionOffset += offset;
         mLandingMovement.reset();
         ++mLandingMovementGeneration;
+        mActorPassThrough.reset();
+        ++mActorPassThroughGeneration;
     }
 
     osg::Vec3f Actor::applyOffsetChange()
@@ -306,6 +320,30 @@ namespace MWPhysics
         std::scoped_lock lock(mPositionMutex);
         mLandingMovement.reset();
         ++mLandingMovementGeneration;
+    }
+
+    void Actor::getActorPassThrough(ActorPassThrough& state, std::uint64_t& generation) const
+    {
+        std::scoped_lock lock(mPositionMutex);
+        state = mActorPassThrough;
+        generation = mActorPassThroughGeneration;
+    }
+
+    bool Actor::setActorPassThrough(const ActorPassThrough& state, std::uint64_t generation)
+    {
+        std::scoped_lock lock(mPositionMutex);
+        if (generation != mActorPassThroughGeneration)
+            return false;
+        mActorPassThrough = state;
+        return true;
+    }
+
+    void Actor::clearActorPassThrough()
+    {
+        std::scoped_lock lock(mPositionMutex);
+        mActorPassThrough.reset();
+        ++mActorPassThroughGeneration;
+        mMovementIntent = false;
     }
 
     void Actor::setOnGround(bool grounded)

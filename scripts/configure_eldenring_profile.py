@@ -208,9 +208,10 @@ def configure(package: Path, morrowind: Path, target: str, allow_unbuilt: bool,
         repair_save_data(config, target, save_data, backup=existing_config)
     settings = profile / "settings.cfg"
     if not settings.exists():
+        # Inherit display, graphics and gameplay preferences from defaults.bin.
+        # Keep user overrides in this separate file across subsequent builds.
         settings.write_text(
-            "[Game]\nelden ring combat = true\n\n"
-            "[Video]\nresolution x = 1280\nresolution y = 720\nwindow mode = 2\n",
+            "[Game]\nelden ring combat = true\n",
             encoding="utf-8",
         )
 

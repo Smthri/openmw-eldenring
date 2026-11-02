@@ -55,6 +55,8 @@ namespace ESM
         mHitRecovery = false;
         mBlock = false;
         mRecalcDynamicStats = false;
+        mEldenTwoHanded = false;
+        mEldenTwoHandedLeft = false;
         if (esm.getFormatVersion() <= MaxUnoptimizedCharacterDataFormatVersion)
         {
             esm.getHNOT(mDead, "DEAD");
@@ -86,6 +88,8 @@ namespace ESM
             mHitRecovery = flags & HitRecovery;
             mBlock = flags & Block;
             mRecalcDynamicStats = flags & RecalcDynamicStats;
+            mEldenTwoHanded = flags & EldenTwoHanded;
+            mEldenTwoHandedLeft = mEldenTwoHanded && (flags & EldenTwoHandedLeft);
         }
 
         mMovementFlags = 0;
@@ -256,6 +260,12 @@ namespace ESM
             flags |= Block;
         if (mRecalcDynamicStats)
             flags |= RecalcDynamicStats;
+        if (mEldenTwoHanded)
+        {
+            flags |= EldenTwoHanded;
+            if (mEldenTwoHandedLeft)
+                flags |= EldenTwoHandedLeft;
+        }
 
         if (flags)
             esm.writeHNT("AFLG", flags);
@@ -327,6 +337,8 @@ namespace ESM
         mMovementFlags = 0;
         mFallHeight = 0.f;
         mRecalcDynamicStats = false;
+        mEldenTwoHanded = false;
+        mEldenTwoHandedLeft = false;
         mDrawState = 0;
         mDeathAnimation = -1;
         mLevel = 1;

@@ -55,6 +55,36 @@ namespace
         check(input.consume(A_Use).mReleased, "light attack did not release");
     }
 
+    void guardedAttackButtons()
+    {
+        using Source = EldenInput::Source;
+        for (const Source source : { Source::Mouse, Source::ControllerButton })
+            for (const bool sameFrame : { false, true })
+            {
+                EldenInput input;
+                input.set(A_Block, true, true, source);
+                if (!sameFrame)
+                    input.consume(A_Block);
+                for (int attack = 0; attack < 3; ++attack)
+                {
+                    input.set(A_Use, true, true, source);
+                    const auto light = input.consume(A_Use);
+                    const auto shield = input.consume(A_Block);
+                    check(light.mPressed && light.mHeld && shield.mHeld && !shield.mReleased,
+                        "light attack did not coexist with a held shield");
+                    check(!input.consume(A_HeavyAttack).mPressed && !input.consume(A_TwoHand).mPressed
+                            && !input.consume(A_TwoHandLeft).mPressed,
+                        "guard plus light accidentally changed grip or attack weight");
+                    input.set(A_Use, false, true, source);
+                    check(input.consume(A_Use).mReleased && input.consume(A_Block).mHeld,
+                        "releasing a spear poke also released the shield");
+                }
+                input.set(A_Block, false, true, source);
+                const auto released = input.consume(A_Block);
+                check(released.mReleased && !released.mHeld, "shield release was swallowed by repeated pokes");
+            }
+    }
+
     void gripChords()
     {
         for (int action : { A_Use, A_Block })
@@ -236,6 +266,7 @@ int main()
         shortTaps();
         chargeLatch();
         lightLatch();
+        guardedAttackButtons();
         gripChords();
         interactions();
         spellsAndTriggers();
@@ -244,7 +275,7 @@ int main()
         overlappingPhysicalBindings();
         disconnectedController();
         mouseWheelTaps();
-        std::cout << "Elden input tests passed (11 groups)\n";
+        std::cout << "Elden input tests passed (12 groups)\n";
     }
     catch (const std::exception& error)
     {

@@ -56,6 +56,7 @@ namespace MWRender
         ViewMode mViewMode;
         bool mShowWeapons;
         bool mShowCarriedLeft;
+        bool mEldenInventoryPreview = false;
 
         enum NpcType
         {
@@ -138,9 +139,14 @@ namespace MWRender
         /// A relative factor (0-1) that decides if and how much the skeleton should be pitched
         /// to indicate the facing orientation of the character.
         void setPitchFactor(float factor) override { mPitchFactor = factor; }
+        float getPitchFactor() const override
+        {
+            return mViewMode == VM_FirstPerson ? (mAccurateAiming ? 1.f : .75f + .25f * mAimingFactor) : mPitchFactor;
+        }
 
         bool getWeaponsShown() const override { return mShowWeapons; }
         void showWeapons(bool showWeapon) override;
+        void setEldenInventoryPreview(bool enabled) { mEldenInventoryPreview = enabled; }
 
         bool updateCarriedLeftVisible(ESM::RefId weaptype) const override;
         bool getCarriedLeftShown() const override { return mShowCarriedLeft; }

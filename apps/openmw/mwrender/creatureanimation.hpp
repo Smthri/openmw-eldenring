@@ -64,6 +64,7 @@ namespace MWRender
         /// A relative factor (0-1) that decides if and how much the skeleton should be pitched
         /// to indicate the facing orientation of the character.
         void setPitchFactor(float factor) override { mPitchFactor = factor; }
+        float getPitchFactor() const override { return mPitchFactor; }
 
     protected:
         bool isArrowAttached() const override;

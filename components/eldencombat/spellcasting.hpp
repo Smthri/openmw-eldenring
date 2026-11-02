@@ -8,6 +8,18 @@
 
 namespace EldenCombat
 {
+    enum class SpellGesture
+    {
+        Generic,
+        Restoration,
+        RestorationArea,
+        Support,
+        Spectral,
+        Fire,
+        Frost,
+        Shock,
+    };
+
     struct SpellAnimation
     {
         std::string_view mWindup;
@@ -15,10 +27,26 @@ namespace EldenCombat
         float mReleaseFrame; // Event 64 in the cast continuation, at 30 fps.
     };
 
-    // Each incantation has a preparation clip and a separate release/recovery
-    // continuation. Match Morrowind's captured range, not the selected GUI spell.
-    inline std::optional<SpellAnimation> spellAnimation(std::string_view range)
+    // The adapter captures the effect and native range when casting starts.
+    // Each gesture has a preparation clip and a release/recovery continuation;
+    // the native range still selects the text keys that actually release magic.
+    inline std::optional<SpellAnimation> spellAnimation(
+        std::string_view range, SpellGesture gesture = SpellGesture::Generic)
     {
+        if (range != "self" && range != "touch" && range != "target")
+            return std::nullopt;
+        if (gesture == SpellGesture::Restoration)
+            return SpellAnimation{ "a433_045000", "a433_045010", 30.f };
+        if (gesture == SpellGesture::RestorationArea)
+            return SpellAnimation{ "a434_045000", "a434_045011", 20.f }; // Heal.
+        if (gesture == SpellGesture::Support)
+            return SpellAnimation{ "a431_045000", "a431_045010", 15.f }; // Protection / fortification.
+        if (gesture == SpellGesture::Spectral || gesture == SpellGesture::Frost)
+            return SpellAnimation{ "a426_045000", "a426_045010", 18.f }; // Shadow Bait / Darkness.
+        if (gesture == SpellGesture::Shock && range == "target")
+            return SpellAnimation{ "a436_045000", "a436_045011", 15.f }; // Lightning Spear, uncharged.
+        if ((gesture == SpellGesture::Fire || gesture == SpellGesture::Shock) && range == "self")
+            return SpellAnimation{ "a506_045000", "a506_045010", 5.f }; // Close-range elemental burst.
         if (range == "self") // Urgent Heal.
             return SpellAnimation{ "a433_045000", "a433_045010", 30.f };
         if (range == "touch") // Catch Flame.

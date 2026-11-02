@@ -77,6 +77,31 @@ namespace
         check(!findSwordSupportGrip(tiny, -12.5f, 3.f), "palm was placed on a handle too short to support it");
     }
 
+    void spearGrips()
+    {
+        using MWRender::EldenPose::findSpearGrip;
+        for (float scale : { .25f, 1.f, 4.f })
+        {
+            std::vector<GripTriangle> shaft;
+            box(shaft, osg::Vec3f(-.7f, -60.f, -.8f) * scale, osg::Vec3f(1.3f, 40.f, 1.2f) * scale);
+            const auto contact = findSpearGrip(shaft);
+            check(contact.has_value(), "spear shaft rejected");
+            close(contact->y() / scale, -20.f, "spear grip is not 40 percent above the butt");
+            close(contact->x() / scale, .3f, "offset spear shaft missed the palm");
+            close(contact->z() / scale, .2f, "offset spear shaft missed the palm depth");
+            // A disconnected ornament at the same section must not pull the
+            // contact away from the central shaft.
+            box(shaft, osg::Vec3f(10, -25, -1) * scale, osg::Vec3f(20, -15, 1) * scale);
+            close((findSpearGrip(shaft).value() - *contact).length(), 0.f, "spear ornament moved the grip");
+        }
+        check(!findSpearGrip({}), "empty spear geometry produced a grip");
+        std::vector<GripTriangle> broad;
+        box(broad, {-40, -50, -40}, {40, 50, 40});
+        check(!findSpearGrip(broad), "non-shaft geometry produced a spear grip");
+        broad[0][0].y() = std::numeric_limits<float>::quiet_NaN();
+        check(!findSpearGrip(broad), "invalid spear geometry produced a grip");
+    }
+
     void offsetsAndOrnaments()
     {
         std::vector<GripTriangle> offset;
@@ -155,6 +180,7 @@ int main(int argc, char** argv)
     try
     {
         handleLengths();
+        spearGrips();
         offsetsAndOrnaments();
         unavailableGeometry();
         if (argc > 1)

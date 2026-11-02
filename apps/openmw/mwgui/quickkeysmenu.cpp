@@ -407,7 +407,10 @@ namespace MWGui
 
             if (key->type == ESM::QuickKeys::Type::Item)
             {
-                if (!store.isEquipped(item.getCellRef().getRefId()))
+                const auto left = store.getSlot(MWWorld::InventoryStore::Slot_CarriedLeft);
+                const bool offhandWeapon = Settings::game().mEldenRingCombat
+                    && item.getType() == ESM::Weapon::sRecordId && left != store.end() && *left == item;
+                if (offhandWeapon || !store.isEquipped(item.getCellRef().getRefId()))
                     MWBase::Environment::get().getWindowManager()->useItem(item);
                 MWWorld::ConstContainerStoreIterator rightHand
                     = store.getSlot(MWWorld::InventoryStore::Slot_CarriedRight);
