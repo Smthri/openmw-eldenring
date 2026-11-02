@@ -405,6 +405,40 @@ namespace ESM
             EXPECT_EQ(record.mLastHitObject, result.mLastHitObject);
         }
 
+        TEST_P(Esm3SaveLoadRecordTest, creatureGripShouldSurviveSaving)
+        {
+            if (GetParam() <= MaxUnoptimizedCharacterDataFormatVersion)
+                GTEST_SKIP() << "Legacy saves predate the actor flags record";
+            for (const bool twoHanded : { false, true })
+                for (const bool left : { false, true })
+                {
+                    CreatureStats record;
+                    record.blank();
+                    record.mEldenTwoHanded = twoHanded;
+                    record.mEldenTwoHandedLeft = left;
+                    record.mTalkedTo = true;
+                    record.mBlock = true;
+                    CreatureStats result;
+                    saveAndLoadRecord(record, GetParam(), result);
+                    EXPECT_EQ(result.mEldenTwoHanded, twoHanded);
+                    EXPECT_EQ(result.mEldenTwoHandedLeft, twoHanded && left);
+                    EXPECT_TRUE(result.mTalkedTo);
+                    EXPECT_TRUE(result.mBlock);
+                }
+        }
+
+        TEST_P(Esm3SaveLoadRecordTest, creatureWithoutSavedGripDefaultsToOneHand)
+        {
+            CreatureStats record;
+            record.blank();
+            CreatureStats result;
+            result.mEldenTwoHanded = true;
+            result.mEldenTwoHandedLeft = true;
+            saveAndLoadRecord(record, GetParam(), result);
+            EXPECT_FALSE(result.mEldenTwoHanded);
+            EXPECT_FALSE(result.mEldenTwoHandedLeft);
+        }
+
         TEST_P(Esm3SaveLoadRecordTest, containerShouldNotChange)
         {
             Container record;

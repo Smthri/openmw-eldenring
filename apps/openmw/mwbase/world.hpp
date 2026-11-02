@@ -311,6 +311,9 @@ namespace MWBase
         /// relative to \a referenceObject (but the object may be placed somewhere else if the wanted location is
         /// obstructed).
 
+        /// Capture intentional movement before the controller consumes its input.
+        virtual void setActorMovementIntent(const MWWorld::Ptr& ptr, bool hasIntent) = 0;
+
         virtual void queueMovement(const MWWorld::Ptr& ptr, const osg::Vec3f& velocity) = 0;
         ///< Queues movement for \a ptr (in local space), to be applied in the next call to
         /// doPhysics.
@@ -325,6 +328,9 @@ namespace MWBase
 
         virtual void setActorCollisionMode(const MWWorld::Ptr& ptr, bool internal, bool external) = 0;
         virtual bool isActorCollisionEnabled(const MWWorld::Ptr& ptr) = 0;
+
+        /// A temporary movement-only exception after the player pushes against this actor.
+        virtual bool isActorPassingThroughPlayer(const MWWorld::ConstPtr& ptr) const = 0;
 
         virtual bool toggleCollisionMode() = 0;
         ///< Toggle collision mode for player. If disabled player object should ignore

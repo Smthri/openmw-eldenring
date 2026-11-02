@@ -225,6 +225,7 @@ namespace MWRender
 
         std::shared_ptr<const EldenCombat::AnimationBank> mEldenAnimationBank;
         std::unique_ptr<EldenAnimation> mEldenAnimation;
+        bool mEldenBowAnimation = false;
 
         MWWorld::Ptr mPtr;
 
@@ -461,8 +462,12 @@ namespace MWRender
         virtual osg::Vec3f runAnimation(float duration);
 
         // The combat controller owns this clock, including hit-stop and weapon speed.
+        bool hasEldenAnimation() const { return mEldenAnimation != nullptr; }
+        bool hasEldenEmbeddedSpear() const;
         bool playEldenAnimation(std::string_view clip, float frame, bool loop, float duration, float yaw = 0.f,
-            std::string_view leftArm = {}, std::string_view rightArm = {}, std::string_view grip = {});
+            std::string_view leftArm = {}, std::string_view rightArm = {}, std::string_view grip = {},
+            bool upperBodyOnly = false, bool bow = false, float bowDraw = 0.f,
+            std::string_view gripChange = {}, float gripChangeFrame = 0.f);
         void clearEldenAnimation();
         float getEldenAnimationLength(std::string_view clip) const;
 
@@ -490,6 +495,7 @@ namespace MWRender
         virtual void setVampire(bool vampire) {}
         void setAlpha(float actorFade, float alpha);
         virtual void setPitchFactor(float factor) {}
+        virtual float getPitchFactor() const { return 0.f; }
         virtual void attachArrow() {}
         virtual void detachArrow() {}
         virtual void releaseArrow(float attackStrength, float attackWindUp) {}

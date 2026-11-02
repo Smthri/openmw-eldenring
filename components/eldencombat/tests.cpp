@@ -1,4 +1,12 @@
 #include "combat.hpp"
+#include "flighttests.hpp"
+#include "poisetests.hpp"
+#include "dodgecosttests.hpp"
+#include "nativeattacktests.hpp"
+#include "guardtests.hpp"
+#include "guardthrusttests.hpp"
+#include "griptests.hpp"
+#include "pairedtests.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -902,6 +910,20 @@ int main()
 {
     try
     {
+        EldenCombat::Tests::controlledFlight();
+        EldenCombat::Tests::enemyPoise();
+        EldenCombat::Tests::configurableDodgeCost();
+        EldenCombat::Tests::nativeCreatureAttacks();
+        EldenCombat::Tests::nativeGuardStamina();
+        EldenCombat::Tests::guardRecoilAnimation();
+        EldenCombat::Tests::attackerGuardDeflection();
+        EldenCombat::Tests::guardedSpearAttacks();
+        EldenCombat::Tests::gripTransitions();
+        EldenCombat::Tests::leftGripRootMotion();
+        EldenCombat::Tests::pairedAttackButtons();
+        EldenCombat::Tests::pairedContactOwnership();
+        EldenCombat::Tests::pairedJumpContacts();
+        EldenCombat::Tests::pairedMisses();
         dodgeAndStamina();
         sprinting();
         sprintTerrainContact();

@@ -83,7 +83,7 @@ namespace MWMechanics
         void updateCombatMove(float duration);
         void stopCombatMove();
         void updateAttack(const MWWorld::Ptr& actor, CharacterController& characterController,
-            const ESM::Weapon* weapon, bool distantCombat, float duration);
+            const ESM::Weapon* weapon, bool distantCombat, float duration, bool canStartAttack = true);
         bool updateEldenAttack(const MWWorld::Ptr& actor, const MWWorld::Ptr& target,
             CharacterController& characterController, bool distantCombat, float duration);
         void stopEldenAttack(const MWWorld::Ptr& actor, bool resetTactics = true);

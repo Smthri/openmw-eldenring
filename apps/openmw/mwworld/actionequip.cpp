@@ -4,6 +4,7 @@
 #include "../mwbase/windowmanager.hpp"
 
 #include "../mwmechanics/actorutil.hpp"
+#include "../mwmechanics/weapontype.hpp"
 
 #include "class.hpp"
 #include "inventorystore.hpp"
@@ -49,11 +50,7 @@ namespace MWWorld
 
         // slots that this item can be equipped in
         std::pair<std::vector<int>, bool> slots = getTarget().getClass().getEquipmentSlots(getTarget());
-        // Inventory use continues to select the primary weapon. Off-hand selection
-        // is explicit through the combat binding or Lua's equipment-slot API.
-        const bool primaryWeapon = object.getType() == ESM::Weapon::sRecordId && slots.first.size() > 1;
-        if (primaryWeapon)
-            slots.first.resize(1);
+        const bool eldenWeapon = object.getType() == ESM::Weapon::sRecordId && slots.first.size() > 1;
         if (slots.first.empty())
             return;
 
@@ -70,16 +67,24 @@ namespace MWWorld
         if (it == invStore.end())
             throw std::runtime_error("ActionEquip can't find item " + object.getCellRef().getRefId().toDebugString());
 
-        if (primaryWeapon && invStore.getSlot(InventoryStore::Slot_CarriedLeft) == it)
+        if (eldenWeapon)
         {
-            // Weapon hotkeys and AI may select the current off-hand item as the
-            // primary weapon. Move it rather than sharing one instance between
-            // both hands, and retain the iterator returned after restacking.
-            const bool selected = invStore.getSelectedEnchantItem() == it;
-            it = invStore.unequipSlot(InventoryStore::Slot_CarriedLeft, false);
-            invStore.equip(InventoryStore::Slot_CarriedRight, it);
-            if (selected)
-                invStore.setSelectedEnchantItem(it);
+            const auto right = invStore.getSlot(InventoryStore::Slot_CarriedRight);
+            const auto left = invStore.getSlot(InventoryStore::Slot_CarriedLeft);
+            const bool inventoryUse = actor == MWMechanics::getPlayer() && !mForce
+                && MWBase::Environment::get().getWindowManager()->isGuiMode();
+            if (it == right || (inventoryUse && it == left))
+                return;
+
+            // Ordinary inventory equipping fills the right hand first, then the
+            // left. Further selections replace the left armament, preserving the
+            // chosen primary. Hotkeys, scripts and AI still select the primary.
+            const bool rightMelee = right != invStore.end() && right->getType() == ESM::Weapon::sRecordId
+                && MWMechanics::getWeaponType(right->get<ESM::Weapon>()->mBase->mData.mType)->mWeaponClass
+                    == ESM::WeaponType::Melee;
+            const int slot = inventoryUse && rightMelee ? InventoryStore::Slot_CarriedLeft
+                                                       : InventoryStore::Slot_CarriedRight;
+            invStore.equip(slot, it);
             return;
         }
 

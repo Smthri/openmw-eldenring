@@ -108,6 +108,29 @@ namespace MWRender::EldenPose
         }
     }
 
+    // Place the leading hand just below the middle of a +Y spear, measured
+    // from its butt. Use the actual shaft cross-section, not the mesh origin
+    // or the width of its blade. Invalid/non-shaft geometry keeps native placement.
+    inline std::optional<osg::Vec3f> findSpearGrip(std::span<const GripTriangle> triangles)
+    {
+        if (triangles.empty() || triangles.size() > 32768)
+            return std::nullopt;
+        float low = std::numeric_limits<float>::max();
+        float high = -low;
+        for (const auto& triangle : triangles)
+            for (const auto& point : triangle)
+            {
+                if (!GripDetail::finite(point))
+                    return std::nullopt;
+                low = std::min(low, point.y());
+                high = std::max(high, point.y());
+            }
+        const float length = high - low;
+        if (!std::isfinite(length) || length < 1e-4f)
+            return std::nullopt;
+        return GripDetail::shaftSection(triangles, low + length * .4f, length * .04f);
+    }
+
     // Morrowind swords attach at the leading hand near local Y=0. Their
     // handles extend towards negative Y. Keep the complete supporting palm on
     // the connected shaft, shortening its spacing for shorter weapon models.

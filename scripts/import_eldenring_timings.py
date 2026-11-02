@@ -7,8 +7,9 @@ files contain data from the game; keep the output local. This importer does not
 download assets or execute Rust/Python expressions from its input.
 
 The adapter uses canonical Front dodges/reactions and the Stand jump. Jump
-attacks combine the airborne hit window/cost with their landing damage metadata;
-touchdown switches to the authored full or short landing animation and recovery.
+attacks preserve each airborne contact's window, cost, damage and weapon hand;
+older tables use their first airborne window with landing damage metadata.
+Touchdown switches to the authored full or short landing animation and recovery.
 Missing airborne or landing damage data preserves the existing jump fallback.
 It imports clip names, weapon stance categories, timing,
 cancel windows, invincibility, per-hit motion values/costs and sampled cumulative
@@ -27,6 +28,7 @@ import json
 import math
 from pathlib import Path
 import re
+import struct
 import sys
 import unittest
 
@@ -60,6 +62,21 @@ TIMING_FIELDS = {
     "cancel_jump": "mCancelJump", "cancel_guard": "mCancelGuard", "cancel_move": "mCancelMove",
     "cancel_left": "mCancelLeft",
 }
+# ERAT version 1 identifiers follow combat.hpp. Existing ordinals must not be
+# reordered without a format version change; no generated game data lives here.
+RUNTIME_ACTIONS = (
+    "Idle Light1 Light2 Light3 Light4 Light5 Light6 Heavy1Charge Heavy1 Heavy2Charge Heavy2 "
+    "RunLight RunHeavy RollAttack BackstepAttack CrouchAttack JumpLight JumpHeavy GuardCounter "
+    "LeftLight1 LeftLight2 LeftLight3 LeftLight4 LeftLight5 LeftLight6 "
+    "PairedLight1 PairedLight2 PairedLight3 PairedLight4 PairedLight5 PairedLight6 "
+    "PairedRun PairedRoll PairedBackstep PairedJump SpearThrust GuardThrust Roll CrouchRoll "
+    "Backstep Jump GuardHit Deflected GuardBreak HurtSmall HurtMiddle HurtLarge Knockdown "
+    "StanceBreak Critical Dead"
+).split()
+RUNTIME_WEAPONS = list(WEAPON_CLASSES.values())
+RUNTIME_LOADS = ["Light", "Medium", "Heavy"]
+RUNTIME_FIELDS = list(TIMING_FIELDS.values()) + [
+    "mInvincibleFrom", "mInvincibleTo", "mChargeFrom", "mChargeTo", "mStartCost", "mDistance", "mStrength"]
 MAX_HITS = 32  # Rust's per-hit masks and EldenCombat::MaximumHits both have 32 slots.
 TOKEN = re.compile(r'\s*(?:("(?:[^"\\]|\\.)*")|(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)'
                    r'|([A-Za-z_][A-Za-z_0-9]*)|([{}\[\](),:&]))')
@@ -219,7 +236,7 @@ class Definition:
     two_hand: bool | None
     load: str | None
     values: dict[str, float]
-    hits: list[tuple[float, ...]]
+    hits: list[tuple[float | bool, ...]]
     root_motion: list[tuple[float, ...]]
     animation: str
     stance: tuple[int, int] | None = None
@@ -233,6 +250,27 @@ def animation_name(fields: dict) -> str:
     if match is None:
         raise ImportError("source must be a baked animation identifier, for example a000_027000")
     return f"a{int(match[1]):03d}_{match[2]}"
+
+
+def convert_hits(raw_hits, action: str, duration: float) -> list[tuple[float | bool, ...]]:
+    if not isinstance(raw_hits, list):
+        raise ImportError(f"{action}: hits must be an array")
+    if len(raw_hits) > MAX_HITS:
+        raise ImportError(f"{action}: {len(raw_hits)} hits exceed the adapter capacity of {MAX_HITS}; no hits were discarded")
+    hits = []
+    for hit in raw_hits:
+        if not isinstance(hit, dict) or hit.get("_type") != "Hit":
+            raise ImportError(f"{action}: expected Hit literal")
+        begin, end = number(hit, "from"), number(hit, "to")
+        if not begin < end <= duration:
+            raise ImportError(f"{action}: hit window lies outside the animation")
+        left = hit.get("left_hand", False)
+        if not isinstance(left, bool):
+            raise ImportError(f"{action}: left_hand must be a boolean")
+        guard = number(hit, "guard_damage")
+        hits.append((begin, end, number(hit, "mv"), number(hit, "stamina"), guard * 5., guard,
+                     number(hit, "stop") * 0.5, left, "left_hand" in hit))
+    return hits
 
 
 def convert(action: str, fields: dict, weapon: str | None = None,
@@ -261,30 +299,26 @@ def convert(action: str, fields: dict, weapon: str | None = None,
     samples = [numeric_tuple(sample, 3, "motion sample") for sample in motion]
     first, last = samples[0], samples[-1]
     values["mDistance"] = math.hypot(last[0] - first[0], last[2] - first[2])
-    raw_hits = fields.get("hits")
-    if not isinstance(raw_hits, list):
-        raise ImportError(f"{action}: hits must be an array")
-    if len(raw_hits) > MAX_HITS:
-        raise ImportError(f"{action}: {len(raw_hits)} hits exceed the adapter capacity of {MAX_HITS}; no hits were discarded")
-    hits = []
-    for hit in raw_hits:
-        if not isinstance(hit, dict) or hit.get("_type") != "Hit":
-            raise ImportError(f"{action}: expected Hit literal")
-        begin, end = number(hit, "from"), number(hit, "to")
-        if not begin < end <= values["mDuration"]:
-            raise ImportError(f"{action}: hit window lies outside the animation")
-        guard = number(hit, "guard_damage")
-        hits.append((begin, end, number(hit, "mv"), number(hit, "stamina"), guard * 5., guard, number(hit, "stop") * 0.5))
+    hits = convert_hits(fields.get("hits"), action, values["mDuration"])
     return Definition(action, weapon, two_hand, load, values, hits, samples, animation_name(fields))
 
 
 def merge_air_attack(landing: Definition, airborne: dict, landing_short: Definition | None = None) -> Definition:
-    """Keep the source's separate air and landing clocks, sharing the hit's damage data."""
+    """Keep separate air/landing clocks and every authored airborne contact."""
     begin, end = number(airborne, "from"), number(airborne, "to")
     if begin >= end:
         raise ImportError("airborne hit window must have from < to")
     cost = number(airborne, "stamina")
     hit = landing.hits[0]
+    if "hits" in airborne:
+        hits = convert_hits(airborne["hits"], landing.action, math.inf)
+        if not hits:
+            raise ImportError("airborne hits must contain at least one contact")
+        begin, end = min(hit[0] for hit in hits), max(hit[1] for hit in hits)
+    else:
+        # Older reference files carry only one airborne contact and borrow its
+        # damage metadata from the first landing contact.
+        hits = [(begin, end, hit[2], cost, hit[4], hit[5], hit[6], hit[7], hit[8])]
     values = dict(landing.values)
     values["mDuration"] = max(values["mDuration"], end + 1.)
     # An airborne attack starts its own clock when pressed. Never let the
@@ -297,9 +331,8 @@ def merge_air_attack(landing: Definition, airborne: dict, landing_short: Definit
     values["mInvincibleFrom"] = values["mInvincibleTo"] = 0.
     values["mChargeFrom"] = values["mChargeTo"] = 0.
     values["mStartCost"] = values["mDistance"] = 0.
-    # The controller preserves this hit's payment/connection across touchdown.
+    # The controller preserves each hit's payment/connection across touchdown.
     # Landing root motion starts with the landing phase, never with the air clock.
-    hits = [(begin, end, hit[2], cost, hit[4], hit[5], hit[6])]
     return Definition(landing.action, landing.weapon, landing.two_hand, landing.load, values, hits, [],
                       animation_name(airborne), landing.stance, landing, landing_short)
 
@@ -460,7 +493,8 @@ def generate_header(definitions: list[Definition]) -> str:
         for key, value in definition.values.items():
             lines.append(f"            result.{key} = {cpp_float(value)};")
         for hit_index, hit in enumerate(definition.hits):
-            lines.append(f"            result.mHits[{hit_index}] = {{ " + ", ".join(map(cpp_float, hit)) + " };")
+            fields = [*(cpp_float(value) for value in hit[:7]), *(str(value).lower() for value in hit[7:])]
+            lines.append(f"            result.mHits[{hit_index}] = {{ " + ", ".join(fields) + " };")
         lines.append(f"            result.mHitCount = {len(definition.hits)};")
         if definition.root_motion:
             lines.append("            static constexpr std::array<float, 3> rootMotion[] = {")
@@ -503,6 +537,40 @@ def generate_header(definitions: list[Definition]) -> str:
     lines += ["            default: return 0;", "        }", "    }", "}", "",
               "#undef OPENMW_ELDENCOMBAT_IMPORTED_NOINLINE", "", "#endif", ""]
     return "\n".join(lines)
+
+
+def generate_runtime(definitions: list[Definition]) -> bytes:
+    """Serialize local data without requiring it to be compiled into an engine."""
+    result = bytearray(struct.pack("<4sII", b"ERAT", 1, len(definitions)))
+
+    def append_definition(definition: Definition):
+        result.extend(definition.animation.encode("ascii"))
+        values = [definition.values.get(field, 0.5 if field == "mStrength" else 0.)
+                  for field in RUNTIME_FIELDS]
+        result.extend(struct.pack("<17fI", *values, len(definition.hits)))
+        for hit in definition.hits:
+            result.extend(struct.pack("<7f??", *hit))
+        if len(definition.root_motion) > 32768:
+            raise ImportError("runtime action has too many root-motion samples")
+        result.extend(struct.pack("<I", len(definition.root_motion)))
+        for sample in definition.root_motion:
+            result.extend(struct.pack("<3f", *sample))
+        phases = int(definition.landing is not None) | (int(definition.landing_short is not None) << 1)
+        result.extend(struct.pack("<B", phases))
+        for landing in (definition.landing, definition.landing_short):
+            if landing is not None:
+                append_definition(landing)
+
+    for definition in definitions:
+        result.extend(struct.pack("<6i", RUNTIME_ACTIONS.index(definition.action),
+                                  RUNTIME_WEAPONS.index(definition.weapon) if definition.weapon else -1,
+                                  int(definition.two_hand) if definition.two_hand is not None else -1,
+                                  RUNTIME_LOADS.index(definition.load) if definition.load else -1,
+                                  *(definition.stance or (-1, -1))))
+        append_definition(definition)
+    if not 0 < len(definitions) <= 8192 or len(result) > 64 * 1024 * 1024:
+        raise ImportError("runtime timing table exceeds supported limits")
+    return bytes(result)
 
 
 def fixture_literal(hits: int = 0) -> str:
@@ -573,6 +641,21 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("result.mAnimationSpeed = speed;", header)
         self.assertIn("WeaponClass::StraightSword: return twoHanded ? 11u : 10u;", header)
 
+    def test_runtime_schema_and_determinism(self):
+        definitions = parse_source(self.source_with_short_landings())
+        data = generate_runtime(definitions)
+        self.assertEqual(struct.unpack_from("<4sII", data), (b"ERAT", 1, len(definitions)))
+        self.assertEqual(data, generate_runtime(parse_source(self.source_with_short_landings())))
+        combat_header = Path(__file__).resolve().parents[1] / "components/eldencombat/combat.hpp"
+        # Packaged importers need no source checkout; this parity check belongs
+        # to source validation, where combat.hpp is present.
+        if combat_header.is_file():
+            source = combat_header.read_text(encoding="utf-8")
+            for enum, names in (("Action", RUNTIME_ACTIONS), ("WeaponClass", RUNTIME_WEAPONS),
+                                ("Load", RUNTIME_LOADS)):
+                body = re.search(rf"enum class {enum}\s*\{{(.*?)\}};", source, re.S).group(1)
+                self.assertEqual(re.findall(r"\b(\w+)\s*,", body), names)
+
     def test_animation_metadata_is_validated(self):
         for source in (self.source().replace('source: "a00_000000"', 'source: "bad"'),
                        self.source_with_air_attacks().replace('source: "a02_031030"', 'source: "bad"'),
@@ -605,6 +688,42 @@ class FixtureTests(unittest.TestCase):
         definitions = parse_source(self.source(fixture_literal(MAX_HITS)))
         self.assertEqual(len(definitions[1].hits), MAX_HITS)
         self.assertIn("result.mHits[31]", generate_header(definitions))
+
+    def test_explicit_hands_preserve_non_alternating_order(self):
+        fields = RustLiteral(fixture_literal(3)).parse()
+        for hit, left in zip(fields["hits"], (True, True, False)):
+            hit["left_hand"] = left
+        definition = convert("PairedLight1", fields, "Dagger", False)
+        self.assertEqual([hit[7:] for hit in definition.hits], [(True, True), (True, True), (False, True)])
+        header = generate_header([definition])
+        self.assertEqual(header.count(", true, true };"), 2)
+        self.assertEqual(header.count(", false, true };"), 1)
+        legacy = convert("PairedLight1", RustLiteral(fixture_literal(2)).parse())
+        self.assertEqual([hit[7:] for hit in legacy.hits], [(False, False), (False, False)])
+        fields["hits"][0]["left_hand"] = 1
+        with self.assertRaisesRegex(ImportError, "left_hand must be a boolean"):
+            convert("PairedLight1", fields)
+
+    def test_airborne_contacts_keep_both_hands_and_own_damage(self):
+        landing = convert("PairedJump", RustLiteral(fixture_literal(2)).parse())
+        airborne = RustLiteral(fixture_air_literal()).parse()
+        hits = RustLiteral(fixture_literal(3)).parse()["hits"]
+        for index, (hit, left) in enumerate(zip(hits, (True, False, True))):
+            hit.update({"from": 5. + index * 3, "to": 8. + index * 3, "left_hand": left,
+                        "mv": 0.7 + index * 0.1, "stamina": 4. + index})
+        airborne["hits"] = hits
+        definition = merge_air_attack(landing, airborne)
+        self.assertEqual([hit[7:] for hit in definition.hits], [(True, True), (False, True), (True, True)])
+        self.assertEqual([(hit[0], hit[1], hit[3]) for hit in definition.hits],
+                         [(5., 8., 4.), (8., 11., 5.), (11., 14., 6.)])
+        self.assertEqual([hit[2] for hit in definition.hits], [hit["mv"] for hit in hits])
+        self.assertGreaterEqual(definition.values["mCancelMove"], 14.)
+        airborne["hits"] = []
+        with self.assertRaisesRegex(ImportError, "at least one contact"):
+            merge_air_attack(landing, airborne)
+        airborne["hits"] = hits * MAX_HITS
+        with self.assertRaisesRegex(ImportError, "capacity"):
+            merge_air_attack(landing, airborne)
 
     def test_airborne_light_heavy_and_paired_attacks(self):
         diagnostics = []
@@ -707,24 +826,36 @@ def main() -> int:
     parser.add_argument("--output", type=Path,
                         default=Path(__file__).resolve().parents[1] / "components/eldencombat/imported_timings.hpp")
     parser.add_argument("--self-test", action="store_true", help="run safe literal parsing and conversion fixtures")
+    parser.add_argument("--runtime-output", type=Path, help="write local ERAT runtime timing data at this path")
+    parser.add_argument("--runtime-only", action="store_true", help="do not create a generated C++ header")
     arguments = parser.parse_args()
     if arguments.self_test:
         return 0 if unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(FixtureTests)).wasSuccessful() else 1
     if arguments.source is None:
         parser.error("source is required: run tools/extract.py against your local Elden Ring files first")
+    if arguments.runtime_only and arguments.runtime_output is None:
+        parser.error("--runtime-only requires --runtime-output")
     try:
         diagnostics = []
         definitions = parse_source(arguments.source.read_text(encoding="utf-8"), diagnostics)
-        header = generate_header(definitions)
-        arguments.output.parent.mkdir(parents=True, exist_ok=True)
-        arguments.output.write_text(header, encoding="utf-8")
+        if not arguments.runtime_only:
+            header = generate_header(definitions)
+            arguments.output.parent.mkdir(parents=True, exist_ok=True)
+            arguments.output.write_text(header, encoding="utf-8")
+        if arguments.runtime_output is not None:
+            data = generate_runtime(definitions)
+            arguments.runtime_output.parent.mkdir(parents=True, exist_ok=True)
+            arguments.runtime_output.write_bytes(data)
     except (OSError, ImportError) as error:
         print(f"Cannot import Elden Ring timings: {error}", file=sys.stderr)
         return 1
-    print(f"Imported {len(definitions)} actions to {arguments.output}. Keep this generated file local.")
+    for output in ([arguments.output] if not arguments.runtime_only else []) + (
+            [arguments.runtime_output] if arguments.runtime_output is not None else []):
+        print(f"Imported {len(definitions)} actions to {output}. Keep this generated file local.")
     for diagnostic in diagnostics:
         print(diagnostic, file=sys.stderr)
-    print("Configure OpenMW again to enable the imported action table.")
+    if not arguments.runtime_only and arguments.runtime_output is None:
+        print("Configure OpenMW again to enable the compiled imported action table.")
     return 0
 
 

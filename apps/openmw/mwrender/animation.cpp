@@ -18,6 +18,8 @@
 
 #include <components/debug/debuglog.hpp>
 #include <components/eldencombat/animations.hpp>
+#include <components/eldencombat/creatureposes.hpp>
+#include <components/eldencombat/timingdata.hpp>
 
 #include <components/resource/animblendrulesmanager.hpp>
 #include <components/resource/keyframemanager.hpp>
@@ -57,8 +59,10 @@
 #include "../mwworld/class.hpp"
 #include "../mwworld/containerstore.hpp"
 #include "../mwworld/esmstore.hpp"
+#include "../mwworld/inventorystore.hpp"
 
 #include "../mwmechanics/character.hpp" // FIXME: for MWMechanics::Priority
+#include "../mwmechanics/creaturestats.hpp"
 #include "../mwmechanics/weapontype.hpp"
 
 #include "actorutil.hpp"
@@ -79,6 +83,22 @@ namespace
         const auto [it, inserted] = banks.try_emplace(vfs);
         if (!inserted)
             return it->second;
+        EldenCombat::setRuntimeTimings({});
+        constexpr VFS::Path::NormalizedView timingsPath("animations/eldencombat/action_timings.bin");
+        try
+        {
+            if (const auto timings = vfs->find(timingsPath))
+            {
+                auto data = std::make_shared<EldenCombat::TimingData>(*timings);
+                EldenCombat::setRuntimeTimings(data);
+                Log(Debug::Info) << "Loaded " << data->size() << " Elden combat runtime action timings";
+            }
+        }
+        catch (const std::exception& error)
+        {
+            Log(Debug::Error) << "Cannot load Elden combat runtime timings: " << error.what()
+                << "; using built-in timing fallback";
+        }
         constexpr VFS::Path::NormalizedView path("animations/eldencombat/player_anims.bin");
         try
         {
@@ -1150,7 +1170,7 @@ namespace MWRender
 
         mActiveControllers.clear();
 
-        // Remove the previous spear attachment override before native keyframes
+        // Remove the previous imported pose and attachment overrides before native keyframes
         // evaluate, including tracks that animate only translation or scale.
         if (mEldenAnimation)
             for (const auto& [node, callback] : mEldenAnimation->beforeNativeControllers())
@@ -1597,6 +1617,7 @@ namespace MWRender
     void Animation::setObjectRoot(const std::string& model, bool forceskeleton, bool baseonly, bool isCreature)
     {
         mEldenAnimation.reset();
+        mEldenBowAnimation = false;
         mEldenAnimationBank.reset();
         osg::ref_ptr<osg::StateSet> previousStateset;
         if (mObjectRoot)
@@ -1709,30 +1730,94 @@ namespace MWRender
             mObjectRoot->addCullCallback(mTransparencyUpdater);
 
         // Capture the model's bind transforms before any native keyframes run.
-        // Creature and osgAnimation rigs retain their own animation sources.
-        if (Settings::game().mEldenRingCombat && mPtr.getClass().isNpc() && !mRequiresBoneMap)
+        // Bipedal creatures can share the NPC rig (skeletons, dremora, saints,
+        // etc.). Require a complete humanoid body for them; the NPC adapter
+        // also supports the deliberately incomplete first-person skeleton.
+        // Both Tribunal Almalexia records omit the Bipedal flag despite using
+        // complete humanoid NIF rigs. Let their actual bones determine support;
+        // the mechanics adapter retains native poses outside combat. The exact
+        // upright ash-creature/Dagoth/draugr mesh families use the same complete
+        // humanoid skeleton contract, despite also lacking that gameplay flag.
+        const ESM::RefId actorId = mPtr.getCellRef().getRefId();
+        const bool almalexia = actorId == "almalexia" || actorId == "almalexia_warrior";
+        const bool hircineGuile = isCreature && actorId.is<ESM::StringRefId>()
+            && EldenCombat::hircineGuileModel(actorId.getRefIdString(), model);
+        const bool humanoid = mPtr.getClass().isNpc()
+            || (isCreature && (mPtr.getClass().isBipedal(mPtr) || almalexia || hircineGuile
+                || EldenCombat::humanoidCreatureModel(model)));
+        if (Settings::game().mEldenRingCombat && humanoid && !mRequiresBoneMap)
         {
             mEldenAnimationBank = getEldenAnimationBank(mResourceSystem->getVFS());
             if (mEldenAnimationBank)
             {
-                mEldenAnimation = std::make_unique<EldenAnimation>(getNodeMap(), *mObjectRoot, mEldenAnimationBank);
+                mEldenAnimation = std::make_unique<EldenAnimation>(
+                    getNodeMap(), *mObjectRoot, mEldenAnimationBank, isCreature, hircineGuile);
                 if (!mEldenAnimation->valid())
                     mEldenAnimation.reset();
             }
+            if (hircineGuile)
+                Log(Debug::Info) << "Elden Ring Guile: "
+                    << (hasEldenEmbeddedSpear() ? "imported Short Spear animations enabled for "
+                                               : "native fallback (rig or animation bank unavailable) for ")
+                    << model;
         }
     }
 
+    bool Animation::hasEldenEmbeddedSpear() const
+    {
+        return mEldenAnimation && mEldenAnimation->hasEmbeddedSpear();
+    }
+
     bool Animation::playEldenAnimation(std::string_view clip, float frame, bool loop, float duration, float yaw,
-        std::string_view leftArm, std::string_view rightArm, std::string_view grip)
+        std::string_view leftArm, std::string_view rightArm, std::string_view grip, bool upperBodyOnly, bool bow, float bowDraw,
+        std::string_view gripChange, float gripChangeFrame)
     {
         if (mEldenAnimation)
         {
             ESM::RefId weaponType;
-            if (!grip.empty())
-                MWMechanics::getActiveWeapon(mPtr, &weaponType);
+            bool leftHanded = false;
+            bool offhandWeapon = false;
+            bool offhandSpear = false;
+            // Embedded creature weapons have a grip pose but no inventory.
+            // Their attachment alignment is owned by the retargeter itself.
+            if (!grip.empty() && mPtr.getClass().hasInventoryStore(mPtr))
+            {
+                const auto& input = mPtr.getClass().getCreatureStats(mPtr).getEldenCombatInput();
+                leftHanded = input.mTwoHanded && input.mTwoHandedLeft;
+                const auto& inventory = mPtr.getClass().getInventoryStore(mPtr);
+                const auto left = inventory.getSlot(MWWorld::InventoryStore::Slot_CarriedLeft);
+                offhandWeapon = !input.mTwoHanded && left != inventory.end()
+                    && left->getType() == ESM::Weapon::sRecordId
+                    && MWMechanics::getWeaponType(left->get<ESM::Weapon>()->mBase->mData.mType)->mWeaponClass
+                        == ESM::WeaponType::Melee;
+                offhandSpear = offhandWeapon
+                    && left->get<ESM::Weapon>()->mBase->mData.mType == ESM::WeaponType::SpearTwoWide;
+                if (leftHanded)
+                {
+                    if (left != inventory.end() && left->getType() == ESM::Weapon::sRecordId)
+                        weaponType = left->get<ESM::Weapon>()->mBase->mData.mType;
+                }
+                else
+                {
+                    // Inventory previews show equipment even while the world
+                    // actor is sheathed. Read the selected slot directly.
+                    const auto right = inventory.getSlot(MWWorld::InventoryStore::Slot_CarriedRight);
+                    if (right != inventory.end() && right->getType() == ESM::Weapon::sRecordId)
+                        weaponType = right->get<ESM::Weapon>()->mBase->mData.mType;
+                }
+            }
             if (mEldenAnimation->play(clip, frame, loop, duration, yaw, leftArm, rightArm, grip,
-                    weaponType == ESM::WeaponType::SpearTwoWide, weaponType == ESM::WeaponType::LongBladeTwoHand))
+                    weaponType == ESM::WeaponType::SpearTwoWide, weaponType == ESM::WeaponType::LongBladeTwoHand,
+                    upperBodyOnly, bow,
+                    (mPtr.getRefData().getPosition().rot[0] + getBodyPitchRadians()) * getPitchFactor(), bowDraw,
+                    leftHanded, offhandWeapon, offhandSpear,
+                    weaponType == ESM::WeaponType::ShortBladeOneHand
+                        || weaponType == ESM::WeaponType::LongBladeOneHand
+                        || weaponType == ESM::WeaponType::LongBladeTwoHand, gripChange, gripChangeFrame))
+            {
+                mEldenBowAnimation = bow;
                 return true;
+            }
         }
         clearEldenAnimation();
         return false;
@@ -1740,6 +1825,7 @@ namespace MWRender
 
     void Animation::clearEldenAnimation()
     {
+        mEldenBowAnimation = false;
         if (mEldenAnimation)
             mEldenAnimation->clear();
     }

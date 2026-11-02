@@ -192,7 +192,12 @@ def main():
     os.environ["ER_FILES"] = str(output)
     unpack(game, output, args.keys_dir.resolve(), reference)
     if args.generate:
-        subprocess.run([sys.executable, str(reference / "tools" / "setup.py")], cwd=reference, check=True)
+        # OpenMW uses its own audio importers. Generate only the action data and
+        # animation bank here, without the reference sandbox's sound/setup step.
+        for script, message in (("extract.py", "Extracting action data..."),
+                                ("bake_anims.py", "Baking OpenMW animations...")):
+            print(message, flush=True)
+            subprocess.run([sys.executable, str(reference / "tools" / script)], cwd=reference, check=True)
 
 
 if __name__ == "__main__":

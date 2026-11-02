@@ -64,7 +64,9 @@ namespace ESM
             KnockdownOverOneFrame = 0x0200,
             HitRecovery = 0x0400,
             Block = 0x0800,
-            RecalcDynamicStats = 0x1000
+            RecalcDynamicStats = 0x1000,
+            EldenTwoHanded = 0x2000,
+            EldenTwoHandedLeft = 0x4000
         };
         bool mDead;
         bool mDeathAnimationFinished;
@@ -83,6 +85,9 @@ namespace ESM
         ESM::RefId mLastHitObject;
         ESM::RefId mLastHitAttemptObject;
         bool mRecalcDynamicStats;
+        // Applied grip only; pending swaps and combat actions remain transient.
+        bool mEldenTwoHanded = false;
+        bool mEldenTwoHandedLeft = false;
         int32_t mDrawState;
         int8_t mDeathAnimation;
         TimeStamp mTimeOfDeath;

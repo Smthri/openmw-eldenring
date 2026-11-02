@@ -75,6 +75,7 @@ namespace MWWorld
         void initSlots(TSlots& slots);
 
         void fireEquipmentChangedEvent();
+        void resetEldenGrip(int slot);
 
         void storeEquipmentState(
             const MWWorld::LiveCellRefBase& ref, size_t index, ESM::InventoryState& inventory) const override;

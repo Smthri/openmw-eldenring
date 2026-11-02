@@ -135,6 +135,7 @@ namespace MWPhysics
         if (actor.mSkipCollisionDetection)
         {
             actor.mLandingMovement.reset();
+            actor.mActorPassThrough.reset();
             actor.mPosition += (osg::Quat(actor.mRotation.x(), osg::Vec3f(-1, 0, 0))
                                    * osg::Quat(actor.mRotation.y(), osg::Vec3f(0, 0, -1)))
                 * actor.mMovement * time;
@@ -211,6 +212,14 @@ namespace MWPhysics
 
         Stepper stepper(collisionWorld, actor.mCollisionObject);
         osg::Vec3f origVelocity = velocity;
+        // Queued animation/root motion alone must never open a collision pair.
+        // Input intent is captured before CharacterController consumes it.
+        osg::Vec3f pushDirection = osg::Quat(actor.mRotation.y(), osg::Vec3f(0, 0, -1)) * actor.mMovement;
+        pushDirection.z() = 0.f;
+        const float requestedPushSpeed = pushDirection.normalize();
+        const bool canPushActor = actor.mIsPlayer && actor.mHasMovementIntent && !actor.mInert
+            && requestedPushSpeed > 1.f;
+        std::uint64_t blockingActor = 0;
         osg::Vec3f newPosition = actor.mPosition;
         /*
          * A loop to find newPosition using tracer, if successful different from the starting position.
@@ -264,6 +273,17 @@ namespace MWPhysics
 
             bool seenGround = !actor.mFlying && !underwater
                 && ((actor.mIsOnGround && !actor.mIsOnSlope) || isWalkableSlope(tracer.mPlaneNormal));
+
+            // Count only frontal, horizontal actor contact. Walking past an
+            // actor, falling onto its head or being shoved by inertia is not
+            // sustained intentional pushing.
+            if (canPushActor && blockingActor == 0 && isActor(tracer.mHitObject)
+                && std::abs(tracer.mPlaneNormal.z()) < 0.5f
+                && pushDirection * tracer.mPlaneNormal < -0.5f)
+            {
+                const auto* blocker = static_cast<const Actor*>(tracer.mHitObject->getUserPointer());
+                blockingActor = blocker->getCollisionId();
+            }
 
             // We hit something. Check if we can step up.
             float hitHeight = tracer.mHitPoint.z() - tracer.mEndPos.z() + actor.mHalfExtentsZ;
@@ -403,6 +423,12 @@ namespace MWPhysics
                 velocity = newVelocity;
             }
         }
+
+        const float forwardDistance = (newPosition - actor.mPosition) * pushDirection;
+        actor.mActorPassThrough.update(
+            canPushActor && isBlockedActorMovement(blockingActor, requestedPushSpeed * time, forwardDistance)
+                ? blockingActor : 0,
+            time);
 
         bool isOnGround = false;
         bool isOnSlope = false;

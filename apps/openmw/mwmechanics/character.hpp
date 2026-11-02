@@ -8,6 +8,7 @@
 #include <components/eldencombat/combat.hpp>
 #include <components/eldencombat/jumpmovement.hpp>
 #include <components/eldencombat/locomotion.hpp>
+#include <components/eldencombat/spellcasting.hpp>
 
 #include "../mwworld/ptr.hpp"
 
@@ -159,6 +160,8 @@ namespace MWMechanics
         bool mAdjustMovementAnimSpeed{ false };
         bool mMovementAnimationHasMovement{ false };
 
+        MWWorld::MovementDirectionFlags getSupportedMovementDirections(CharacterState state) const;
+
         CharacterState mDeathState{ CharState_None };
         std::string mCurrentDeath;
         bool mFloatToSurface{ true };
@@ -190,6 +193,8 @@ namespace MWMechanics
         bool mEldenCriticalPending{ false };
         MWWorld::Ptr mEldenOffhand;
         std::uint64_t mEldenAnimationSequence{ 0 };
+        std::optional<EldenCombat::NativeAttackTiming> mEldenNativeAttack;
+        std::optional<std::uint64_t> mEldenNativeAttackSequence;
         EldenCombat::Action mEldenAnimationAction{ EldenCombat::Action::Idle };
         EldenCombat::Update mEldenUpdate;
         EldenCombat::JumpMovement mEldenJumpMovement;
@@ -200,6 +205,8 @@ namespace MWMechanics
         EldenCombat::GroundContactGrace mEldenGroundContact;
         EldenCombat::IdleFacing mEldenIdleFacing;
         bool mEldenPoseDead{ false };
+        std::optional<EldenCombat::SpellAnimation> mEldenSpellAnimation;
+        std::optional<ESM::FormId> mEldenCastingItemId;
 
         bool mSkipAnim{ false };
 

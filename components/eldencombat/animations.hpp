@@ -25,6 +25,10 @@ namespace EldenCombat
     LocomotionAnimation locomotionAnimation(
         float moveX, float moveY, bool crouching, bool running, bool sprinting, bool turnToMovement);
 
+    // A stance's own gait already animates its weapon arm. Only layer the
+    // one-handed carry when falling back to another category (including crouch).
+    bool locomotionNeedsCarry(std::string_view stance, std::string_view locomotion, bool twoHanded);
+
     // Retain the current directional gait near diagonal boundaries. Small
     // steering changes must not restart the pose transition every frame.
     class LocomotionAnimationState

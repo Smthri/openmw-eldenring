@@ -4,6 +4,7 @@
 #include "lib/light/struct.glsl"
 
 uniform float clusterFar;
+uniform bool pointLightingEnabled;
 
 float fade(float x)
 {

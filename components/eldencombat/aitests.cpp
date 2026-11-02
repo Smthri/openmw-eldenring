@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace
@@ -309,6 +310,94 @@ namespace
         check(requests == 2 && largestCombo == 3, "heavy finisher exceeded the three-attack combination limit");
         close(tactics.attackCooldown(), AttackDelay, "heavy finisher omitted its recovery pause");
     }
+
+    void meleeFacingCone()
+    {
+        constexpr float pi = 3.14159265358979323846f;
+        for (float direction : { -1.f, 1.f })
+        {
+            check(meleeAttackFacing(0.f, direction * pi / 6.f), "turning toward a nearby target prevents a windup");
+            check(meleeAttackFacing(0.f, direction * (pi / 3.f - .001f)), "forward edge cannot start a windup");
+            check(!meleeAttackFacing(0.f, direction * (pi / 3.f + .001f)), "windup starts outside the forward cone");
+            check(!meleeAttackFacing(0.f, direction * pi), "AI starts a swing facing away from its target");
+            check(meleeAttackFacing(direction * (pi - .1f), -direction * (pi - .1f)),
+                "yaw wrap prevents a forward-facing windup");
+        }
+        check(!meleeAttackFacing(std::numeric_limits<float>::quiet_NaN(), 0.f), "invalid actor yaw permits attacks");
+        check(!meleeAttackFacing(0.f, std::numeric_limits<float>::infinity()), "invalid target yaw permits attacks");
+        check(rangedAttackFacing(0.f, pi / 9.f, 0.f, pi / 9.f), "tracking prevents a native ranged windup");
+        check(!rangedAttackFacing(0.f, pi / 5.f, 0.f, 0.f), "ranged windup starts outside its yaw cone");
+        check(!rangedAttackFacing(0.f, 0.f, 0.f, pi / 5.f), "ranged windup starts outside its pitch cone");
+        check(!rangedAttackFacing(0.f, 0.f, 0.f, std::numeric_limits<float>::quiet_NaN()),
+            "invalid pitch permits ranged attacks");
+    }
+
+    void circlingTargetDoesNotStarveAttacks()
+    {
+        constexpr float pi = 3.14159265358979323846f;
+        // Use the native smoothTurn rate/easing at base creature speed. These
+        // targets stay in range and visible while orbiting continuously. Their
+        // steady tracking lag never reaches the old 3-degree completion gate.
+        for (int fps : { 30, 60, 144 })
+        {
+            for (float angularSpeed : { -4.f, -2.5f, 2.5f, 4.f })
+            {
+                Controller controller;
+                AiTactics tactics;
+                float actorYaw = 0.f;
+                float targetYaw = 0.f;
+                const float seconds = 1.f / fps;
+                int openers = 0;
+                int continuations = 0;
+                int oldReadyFrames = 0;
+                int rangedReadyFrames = 0;
+                for (int tick = 0; tick < fps * 24; ++tick)
+                {
+                    targetYaw = std::remainder(targetYaw + angularSpeed * seconds, 2.f * pi);
+                    const float error = std::remainder(targetYaw - actorYaw, 2.f * pi);
+                    const bool oldFacing = std::abs(error) < 3.f * pi / 180.f;
+                    if (tick >= fps * 4 && oldFacing)
+                        ++oldReadyFrames;
+                    if (tick >= fps * 4 && rangedAttackFacing(actorYaw, targetYaw, 0.f, .1f))
+                        ++rangedReadyFrames;
+                    const float limit = 5.f * pi * seconds * std::min(std::abs(error) / pi + .1f, .5f);
+                    const float turn = oldFacing ? 0.f : std::clamp(error, -limit, limit);
+
+                    Input input;
+                    input.mInCombat = true;
+                    if (meleeAttackFacing(actorYaw, targetYaw))
+                    {
+                        if (controller.action() == Action::Idle && tactics.attackReady())
+                        {
+                            input.mLight = { true, true, false };
+                        }
+                        else if (tactics.canCombo(controller, AiAttackButton::Light, 3))
+                        {
+                            input.mLight = { true, true, false };
+                            tactics.markComboRequested(controller);
+                        }
+                    }
+                    const bool wasAttacking = Controller::isAttack(controller.action());
+                    const auto sequence = controller.sequence();
+                    advance(controller, tactics, input, seconds);
+                    if (Controller::isAttack(controller.action()) && controller.sequence() != sequence)
+                    {
+                        if (wasAttacking)
+                            ++continuations;
+                        else
+                            ++openers;
+                    }
+                    if (wasAttacking && !Controller::isAttack(controller.action()))
+                        close(tactics.attackCooldown(), AttackDelay, "circling removed the pause between chains");
+                    actorYaw = std::remainder(actorYaw + turn, 2.f * pi);
+                }
+                check(oldReadyFrames == 0, "circling regression does not reproduce the old turn-completion starvation");
+                check(openers >= 3, "continuous circling starves AI attack openers");
+                check(continuations >= 3, "continuous circling prevents AI combo continuations");
+                check(rangedReadyFrames >= fps * 10, "continuous circling starves native spell/projectile windups");
+            }
+        }
+    }
 }
 
 int main()
@@ -323,6 +412,8 @@ int main()
         chargeReleaseIsOneAttack();
         fullyChargedHeavyCanContinue();
         lightCombinationHeavyFinisher();
+        meleeFacingCone();
+        circlingTargetDoesNotStarveAttacks();
         std::cout << "Elden combat AI tests passed\n";
         return EXIT_SUCCESS;
     }
