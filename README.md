@@ -178,9 +178,19 @@ Left click attacks with the right-hand weapon. Sheathing hides both weapons;
 shields retain their normal visibility. With a spear and shield, hold right
 mouse and press left mouse to thrust while blocking.
 
-Existing key bindings are preserved; use **Reset to Defaults** in Controls to
-adopt the new layout. See [ELDEN-COMBAT.txt](ELDEN-COMBAT.txt) for gamepad
-controls and the remaining bindings.
+Change combat bindings under **Settings > Controls > Elden Ring**, using the
+keyboard/mouse or controller selector. Modifier combinations follow the actions
+you bind there. Existing bindings are preserved; **Reset All to Defaults** in
+Controls restores the selected device's complete layout. See
+[ELDEN-COMBAT.txt](ELDEN-COMBAT.txt) for gamepad controls and the remaining bindings.
+
+Idle and walking with weapons sheathed, plus death, use Morrowind animations.
+Drawn weapon idle/walking, running, sprinting and combat actions use Elden Ring animations.
+The inventory preview uses the imported ready stance for equipped melee armaments.
+In third person, looking around an idle character keeps the same camera-orbit
+behavior with weapons drawn or sheathed.
+Sheathed idle keeps the direction of a completed roll/backstep. Smooth Movement
+also smooths sheathed visual turns across idle, walking and running.
 
 ## Keep proprietary data out of Git
 

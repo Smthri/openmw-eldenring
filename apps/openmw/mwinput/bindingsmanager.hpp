@@ -88,6 +88,9 @@ namespace MWInput
 
         bool mDragDrop;
         EldenInput mEldenInput;
+        // Existing controls, including deliberately unbound ones, belong to the
+        // user's profile. Only missing action IDs receive migration defaults.
+        std::array<bool, A_Last> mLoadedControls{};
         // Avoid dispatching a physical press twice when ICS updates its channel.
         std::array<bool, A_Last> mCapturedActions{};
     };

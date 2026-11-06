@@ -99,6 +99,32 @@ namespace EldenCombat
             return std::remainder(mWorldYaw + actorYaw, fullTurn);
         }
 
+        // Optional visual turning for sheathed locomotion. Work in world space
+        // so camera rotation cannot change a stationary pose or bypass the turn
+        // rate when movement resumes. Actions can still latch their displayed
+        // heading immediately through update(), using this same state.
+        float updateSmoothed(float actorYaw, float poseYaw, bool moving, float seconds, float turningDelay)
+        {
+            constexpr float pi = 3.14159265358979323846f;
+            constexpr float fullTurn = 2.f * pi;
+            if (!mHaveFacing)
+                return update(actorYaw, poseYaw, moving);
+            if (moving && std::isfinite(seconds) && seconds > 0.f)
+            {
+                if (!std::isfinite(turningDelay) || turningDelay <= 0.f)
+                    return update(actorYaw, poseYaw, true);
+                const float target = std::remainder(poseYaw - actorYaw, fullTurn);
+                float delta = std::remainder(target - mWorldYaw, fullTurn);
+                // Both arcs are equally short at a reversal. Choose the same
+                // side regardless of signed zero or the +/-pi representation.
+                if (delta <= -pi + 1e-6f)
+                    delta = pi;
+                const float limit = pi * seconds / turningDelay;
+                mWorldYaw = std::remainder(mWorldYaw + std::clamp(delta, -limit, limit), fullTurn);
+            }
+            return std::remainder(mWorldYaw + actorYaw, fullTurn);
+        }
+
     private:
         float mWorldYaw = 0.f;
         bool mHaveFacing = false;

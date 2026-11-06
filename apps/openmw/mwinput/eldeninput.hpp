@@ -17,11 +17,10 @@ namespace MWInput
     {
     public:
         // OpenMW supports one active controller. Keep its buttons/axes separate
-        // from keyboard/mouse bindings, including the two Shift keys.
+        // from keyboard/mouse bindings.
         enum class Source
         {
             Keyboard,
-            AlternateShift,
             Mouse,
             MouseWheel,
             ControllerButton,

@@ -439,6 +439,83 @@ namespace
             }
         }
     }
+
+    void smoothIdleFacing()
+    {
+        constexpr float delay = .333f;
+        for (const float fps : { 30.f, 60.f, 144.f })
+            for (const float target : { -Pi, -Pi / 2.f, Pi / 2.f, Pi })
+            {
+                EldenCombat::IdleFacing facing;
+                close(facing.updateSmoothed(0.f, 0.f, false, 0.f, delay), 0.f,
+                    "new visual heading did not initialize immediately");
+                float displayed = 0.f;
+                const float step = 1.f / fps;
+                for (int tick = 1; tick <= static_cast<int>(fps); ++tick)
+                {
+                    // Moving the camera changes actor/pose coordinates, while
+                    // the requested world heading stays fixed. This also
+                    // represents native walk -> imported run gait handoff.
+                    const float actorYaw = tick * .19f;
+                    const float pose = facing.updateSmoothed(actorYaw, target + actorYaw, true, step, delay);
+                    const float world = std::remainder(pose - actorYaw, 2.f * Pi);
+                    check(std::abs(std::remainder(world - displayed, 2.f * Pi)) <= Pi * step / delay + 1e-4f,
+                        "sheathed visual heading exceeded its angular rate");
+                    const float signedTarget = std::abs(target) == Pi ? Pi : target;
+                    const float expected = std::clamp(signedTarget, -Pi * tick * step / delay,
+                        Pi * tick * step / delay);
+                    close(heading(world), heading(expected), "visual turn depends on frame rate or camera yaw");
+                    displayed = world;
+                }
+                close(heading(displayed), heading(target), "visual turn never reached the requested gait heading");
+            }
+
+        EldenCombat::IdleFacing facing;
+        facing.update(0.f, Pi - .02f, true);
+        const float wrapped = facing.updateSmoothed(0.f, -Pi + .02f, true, .002f, delay);
+        check(std::remainder(wrapped - (Pi - .02f), 2.f * Pi) > 0.f,
+            "visual turning took the long arc across the angle boundary");
+        close(heading(facing.updateSmoothed(0.f, -Pi + .02f, true, .1f, delay)), heading(-Pi + .02f),
+            "wrapped visual turn failed to reach its target");
+
+        facing.update(0.f, 0.f, true);
+        const float partial = facing.updateSmoothed(0.f, Pi, true, .05f, delay);
+        check(partial > 0.f && partial < Pi, "movement restart snapped through a half turn");
+        for (const float camera : { -4.f, -.1f, 0.f, .8f, 5.f })
+        {
+            close(heading(facing.updateSmoothed(camera, -2.f, false, .1f, delay) - camera), heading(partial),
+                "stopping completed a pending turn instead of holding the displayed heading");
+            for (const float seconds : { 0.f, -.1f, std::numeric_limits<float>::quiet_NaN() })
+                close(heading(facing.updateSmoothed(camera, -2.f, true, seconds, delay) - camera), heading(partial),
+                    "paused visual turn changed its world heading");
+        }
+
+        // An imported roll or backstep captures its actual displayed heading,
+        // without applying locomotion smoothing to that action.
+        close(facing.update(.8f, -Pi / 2.f, true), -Pi / 2.f, "action facing was smoothed");
+        const float actionWorld = -Pi / 2.f - .8f;
+        close(heading(facing.updateSmoothed(-.7f, 0.f, false, .1f, delay) + .7f), heading(actionWorld),
+            "native idle lost the imported action heading");
+        const float resume = facing.updateSmoothed(-.7f, .9f, true, .01f, delay) + .7f;
+        check(std::abs(std::remainder(resume - actionWorld, 2.f * Pi)) <= Pi * .01f / delay + 1e-4f,
+            "running after an imported action snapped to the new heading");
+
+        // The existing immediate path remains authoritative when smoothing is
+        // disabled or a drawn armament owns the pose. Toggling back on must not
+        // resurrect the last smoothed heading.
+        close(facing.update(1.f, .4f, true), .4f, "immediate facing changed behavior");
+        close(facing.updateSmoothed(1.f, .4f, true, .01f, delay), .4f,
+            "enabling smoothing restored stale facing");
+        for (const float invalidDelay : { 0.f, -1.f, std::numeric_limits<float>::quiet_NaN() })
+        {
+            facing.update(0.f, 0.f, true);
+            close(facing.updateSmoothed(0.f, 1.f, true, .01f, invalidDelay), 1.f,
+                "invalid visual turning delay did not use immediate facing");
+        }
+        facing.reset();
+        close(facing.updateSmoothed(-2.f, .7f, false, 0.f, delay), .7f,
+            "reset retained an old smoothed world heading");
+    }
 }
 
 int main()
@@ -466,6 +543,7 @@ int main()
         stableLockOnFacing();
         stableGroundContact();
         idleFacing();
+        smoothIdleFacing();
         std::cout << "Elden locomotion: " << checks << " checks passed\n";
     }
     catch (const std::exception& error)

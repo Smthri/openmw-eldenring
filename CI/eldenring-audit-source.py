@@ -37,7 +37,7 @@ TEXT_SUFFIXES = {
     ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".cmake",
     ".txt", ".md", ".rst", ".lua", ".py", ".sh", ".ps1", ".json",
     ".yml", ".yaml", ".xml", ".ui", ".cfg", ".manifest", ".patch",
-    ".diff", ".toml", ".in", ".rs", ".glsl", ".gitignore", ".gitattributes",
+    ".diff", ".toml", ".in", ".rs", ".glsl", ".layout", ".gitignore", ".gitattributes",
 }
 TEXT_NAMES = {".gitignore", ".gitattributes", "LICENSE", "COPYING", "AUTHORS", "README"}
 FORBIDDEN_NAMES = {
@@ -236,6 +236,11 @@ class GuardTests(unittest.TestCase):
             return inspect_blob(Entry(mode, "", path, "test"), data)
         self.assertEqual(check("scripts/example.py", b"print('source')\n"), [])
         self.assertEqual(check("files/shaders/example.glsl", b"void main() { gl_Position = vec4(0.0); }\n"), [])
+        # MyGUI layouts are authored XML source, subject to the same payload
+        # and credential checks as other allowed text formats.
+        self.assertEqual(check("files/data/mygui/example.layout", b'<MyGUI type="Layout"/>\n'), [])
+        self.assertTrue(check("files/data/mygui/payload.layout", b"ERAN\0\0"))
+        self.assertTrue(check("files/data/mygui/payload.layout", ("ghp_" + "a" * 36).encode()))
         self.assertTrue(check("files/shaders/payload.glsl", b"ERAN\0\0"))
         self.assertTrue(check("files/shaders/payload.glsl", ("ghp_" + "a" * 36).encode()))
         self.assertTrue(check("scripts/payload.py", b"ERAN\0\0"))

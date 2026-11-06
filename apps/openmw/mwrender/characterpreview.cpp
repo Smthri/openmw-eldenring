@@ -385,11 +385,12 @@ namespace MWRender
         const auto& input = mCharacter.getClass().getCreatureStats(mCharacter).getEldenCombatInput();
         const auto selected = input.mTwoHanded && input.mTwoHandedLeft
             ? inv.getSlot(MWWorld::InventoryStore::Slot_CarriedLeft) : iter;
-        std::string eldenStance;
-        if (mAnimation->hasEldenAnimation() && MWMechanics::useEldenCombat(mCharacter)
+        const bool eldenEquipment = mAnimation->hasEldenAnimation() && MWMechanics::useEldenCombat(mCharacter)
             && (selected == inv.end() || selected->getType() != ESM::Weapon::sRecordId
                 || MWMechanics::getWeaponType(selected->get<ESM::Weapon>()->mBase->mData.mType)->mWeaponClass
-                    == ESM::WeaponType::Melee))
+                    == ESM::WeaponType::Melee);
+        std::string eldenStance;
+        if (eldenEquipment && selected != inv.end())
         {
             const auto config = MWMechanics::eldenCombatConfig(mCharacter);
             eldenStance = EldenCombat::stanceAnimation(config.mWeaponClass, input.mTwoHanded, 0);
@@ -397,7 +398,7 @@ namespace MWRender
                 eldenStance.clear();
         }
         mAnimation->clearEldenAnimation();
-        mAnimation->setEldenInventoryPreview(!eldenStance.empty());
+        mAnimation->setEldenInventoryPreview(eldenEquipment);
         mAnimation->showWeapons(true);
         mAnimation->updateParts();
 
@@ -436,7 +437,7 @@ namespace MWRender
             }
         }
 
-        if (!eldenStance.empty())
+        if (eldenEquipment)
             showCarriedLeft = !input.mTwoHanded || input.mTwoHandedLeft;
         mAnimation->showCarriedLeft(showCarriedLeft);
 
@@ -454,9 +455,8 @@ namespace MWRender
             mAnimation->disable("torch");
 
         mAnimation->runAnimation(0.0f);
-        // The inventory is a static render. Finish the pose fade now so both
-        // hands and their attachment axes match the selected combat grip even
-        // when the world actor currently has its weapons sheathed.
+        // Equipped armaments are drawn in the preview. Finish the static pose
+        // fade so their attachments match the selected imported ready stance.
         if (!eldenStance.empty())
             mAnimation->playEldenAnimation(eldenStance, 0.f, true, 1.f, 0.f, {}, {}, eldenStance);
 

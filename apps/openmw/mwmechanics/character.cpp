@@ -2453,8 +2453,24 @@ namespace MWMechanics
                 || mPtr.getClass().getCreatureStats(mPtr).getEldenCombatInput().mTwoHandedLeft);
     }
 
+    bool CharacterController::useEldenNativeFacing() const
+    {
+        if (!mEldenCombatActive || !mAnimation->hasEldenAnimation() || mPtr != getPlayer()
+            || MWBase::Environment::get().getWorld()->isFirstPerson() || isScriptedAnimPlaying()
+            || mUpperBodyState != UpperBodyState::None || mHitState != CharState_None)
+            return false;
+        const auto& stats = mPtr.getClass().getCreatureStats(mPtr);
+        const auto& input = stats.getEldenCombatInput();
+        return !stats.isDead() && stats.getDrawState() == DrawState::Nothing
+            && !input.mLockedOn && !input.mCrouching
+            && stats.getEldenCombat().action() == EldenCombat::Action::Idle;
+    }
+
     void CharacterController::updateEldenPose(float duration, const osg::Vec3f& movement)
     {
+        // This affects native rendering only. Release it on every fallback,
+        // action, first-person, scripted and death transition below.
+        mAnimation->setEldenNativeYaw(std::nullopt);
         const auto& cls = mPtr.getClass();
         if (!mAnimation->hasEldenAnimation() || !useEldenCombat(mPtr) || isScriptedAnimPlaying())
         {
@@ -2470,25 +2486,12 @@ namespace MWMechanics
             mEldenLocomotion.reset();
             mEldenGroundContact.reset();
             mEldenIdleFacing.reset();
-            if (!mEldenPoseDead)
-            {
-                const float length = mAnimation->getEldenAnimationLength("a000_017002");
-                float complete = 0.f;
-                mAnimation->getInfo(mCurrentDeath, &complete);
-                mEldenPoseTime = stats.isDeathAnimationFinished() || complete >= 1.f
-                    ? length / EldenCombat::AnimationFps : 0.f;
-                const float from = mAnimation->getTextKeyTime(mCurrentDeath + ": start");
-                const float to = mAnimation->getTextKeyTime(mCurrentDeath + ": stop");
-                // Keep native death completion/corpse bookkeeping on the same timeline.
-                if (length > 0.f && to > from)
-                    mAnimation->adjustSpeedMult(mCurrentDeath, (to - from) * EldenCombat::AnimationFps / length);
-            }
-            mEldenPoseDead = true;
-            mEldenPoseTime += duration;
-            mAnimation->playEldenAnimation("a000_017002", mEldenPoseTime * EldenCombat::AnimationFps, false, duration);
+            // Native death tracks own both the pose and corpse completion.
+            // Clear any combat overlay without retiming the selected death.
+            mEldenPoseTime = 0.f;
+            mAnimation->clearEldenAnimation();
             return;
         }
-        mEldenPoseDead = false;
         const auto& combat = stats.getEldenCombat();
         const auto& input = stats.getEldenCombatInput();
         const auto action = combat.action();
@@ -2686,13 +2689,52 @@ namespace MWMechanics
                 clip = EldenCombat::Controller::actionDefinition(EldenCombat::Action::GuardBreak, combat.config()).mAnimation;
             const float yaw = action == EldenCombat::Action::Roll || action == EldenCombat::Action::CrouchRoll
                 ? std::atan2(-mEldenUpdate.mMoveX, mEldenUpdate.mMoveY) : 0.f;
-            mAnimation->playEldenAnimation(clip, combat.frame() * definition.mAnimationSpeed, false, duration,
-                yaw, guard.mLeftArm, guard.mRightArm, grip, false, bow);
+            const bool played = mAnimation->playEldenAnimation(clip, combat.frame() * definition.mAnimationSpeed, false,
+                duration, yaw, guard.mLeftArm, guard.mRightArm, grip, false, bow);
+            if (played && !equipped && mPtr == getPlayer()
+                && !MWBase::Environment::get().getWorld()->isFirstPerson() && !input.mLockedOn)
+            {
+                // Native idle must inherit the action's facing, not an old
+                // native leg angle. Backsteps face forward while travelling
+                // backward, so capture pose yaw rather than root displacement.
+                mEldenIdleFacing.update(mPtr.getRefData().getPosition().rot[2], yaw, true);
+            }
             return;
         }
-        // Walking and standing need the same visual tolerance for brief terrain
-        // contact gaps as sprinting. Levitation uses the imported standing/walk
-        // poses; falls still select the air pose.
+        const float travelSpeed = std::hypot(movement.x(), movement.y());
+        const bool moving = travelSpeed > 0.001f;
+        const bool running = !input.mFlying && stats.getStance(CreatureStats::Stance_Run);
+        if (!equipped && !input.mCrouching && (input.mFlying || visuallyGrounded)
+            && (!moving || (!running && !combat.sprinting())))
+        {
+            // Sheathed idle and walking stay native. Drawn armaments use their
+            // imported stance and gait below, including guard and grip changes.
+            mEldenLocomotion.reset();
+            if (useEldenNativeFacing())
+            {
+                // Native directional walk tracks already determine leg facing.
+                // Hold that world heading when stopping, just as imported poses
+                // do, and rotate the native body as one unit while the camera orbits.
+                const float actorYaw = mPtr.getRefData().getPosition().rot[2];
+                const float poseYaw = mAnimation->getLegsYawRadians();
+                const float yaw = Settings::game().mSmoothMovement
+                    ? mEldenIdleFacing.updateSmoothed(actorYaw, poseYaw, moving, duration,
+                        Settings::game().mSmoothMovementPlayerTurningDelay)
+                    : mEldenIdleFacing.update(actorYaw, poseYaw, moving);
+                mAnimation->setEldenNativeYaw(yaw);
+            }
+            else
+                mEldenIdleFacing.reset();
+            if (guard || !gripPose.mAnimation.empty())
+                mAnimation->playEldenAnimation(stance, mEldenPoseTime * EldenCombat::AnimationFps, true,
+                    duration, 0.f, guard.mLeftArm, guard.mRightArm, grip, true, bow,
+                    0.f, gripPose.mAnimation, gripPose.mFrame);
+            else
+                mAnimation->clearEldenAnimation();
+            return;
+        }
+        // Ground-contact grace also keeps native standing/walking above from
+        // flickering into the imported falling pose on brief terrain gaps.
         if (!input.mFlying && !visuallyGrounded && !combat.sprinting())
         {
             mEldenLocomotion.reset();
@@ -2703,14 +2745,11 @@ namespace MWMechanics
             return;
         }
 
-        const float travelSpeed = std::hypot(movement.x(), movement.y());
-        const bool moving = travelSpeed > 0.001f;
         std::string clip = input.mCrouching ? (bow ? "a014_300000" : "a000_300000") : stance;
         float frame = mEldenPoseTime * EldenCombat::AnimationFps;
         float yaw = 0.f;
         if (moving)
         {
-            const bool running = !input.mFlying && stats.getStance(CreatureStats::Stance_Run);
             // Native leg yaw is overwritten by the imported full-body pose.
             // Apply this preference to the imported gait itself, using actual
             // smoothed travel while leaving the actor/camera aiming frame alone.
@@ -2743,7 +2782,13 @@ namespace MWMechanics
         // Lock-on, guard and first person continue to face the aiming direction.
         if (mPtr == getPlayer() && !MWBase::Environment::get().getWorld()->isFirstPerson()
             && !input.mLockedOn && !combat.guarding())
-            yaw = mEldenIdleFacing.update(mPtr.getRefData().getPosition().rot[2], yaw, moving);
+        {
+            if (!equipped && Settings::game().mSmoothMovement)
+                yaw = mEldenIdleFacing.updateSmoothed(mPtr.getRefData().getPosition().rot[2], yaw, moving,
+                    duration, Settings::game().mSmoothMovementPlayerTurningDelay);
+            else
+                yaw = mEldenIdleFacing.update(mPtr.getRefData().getPosition().rot[2], yaw, moving);
+        }
         else
             mEldenIdleFacing.reset();
         // Keep the gait's authored weapon-arm motion. The idle carry is only
@@ -3339,7 +3384,7 @@ namespace MWMechanics
                 {
                     // It seems only bipedal actors use turning animations.
                     // Also do not use turning animations in the first-person view and when sneaking.
-                    if (!sneak && !isFirstPersonPlayer && isBiped)
+                    if (!sneak && !isFirstPersonPlayer && isBiped && !useEldenNativeFacing())
                     {
                         if (effectiveRotation > 0.f)
                             movestate = inwater ? CharState_SwimTurnRight : CharState_TurnRight;
@@ -3379,7 +3424,8 @@ namespace MWMechanics
                 {
                     mTurnAnimationThreshold = 0.05f;
                 }
-                else if (movestate == CharState_None && isTurning() && mTurnAnimationThreshold > 0)
+                else if (movestate == CharState_None && isTurning() && mTurnAnimationThreshold > 0
+                    && !useEldenNativeFacing())
                 {
                     movestate = mMovementState;
                 }
@@ -3828,13 +3874,20 @@ namespace MWMechanics
         if (mHitState != CharState_None || mDeathState != CharState_None)
             return true;
 
-        // Imported locomotion follows the requested speed; the native clip
-        // underneath it must not replace that velocity with directional root
-        // motion. Creatures without an imported pose adapter still need their
-        // native root motion, including the run/walk animation velocity ratio.
-        // Elden attack/dodge displacement is applied separately.
+        // Native sheathed idle/walk tracks retain their own displacement.
+        // Drawn armaments and imported actions/gaits own their velocity.
         if (mEldenCombatActive && mAnimation->hasEldenAnimation())
-            return false;
+        {
+            const auto& stats = mPtr.getClass().getCreatureStats(mPtr);
+            const auto& input = stats.getEldenCombatInput();
+            const auto& combat = stats.getEldenCombat();
+            const bool running = stats.getStance(CreatureStats::Stance_Run)
+                && mPtr.getClass().getMovementSettings(mPtr).mSpeedFactor > 0.f;
+            const bool equipped = mAnimation->hasEldenEmbeddedSpear() || stats.getDrawState() == DrawState::Weapon;
+            if (combat.action() != EldenCombat::Action::Idle || input.mCrouching
+                || equipped || running || combat.sprinting() || (!input.mGrounded && !input.mFlying))
+                return false;
+        }
 
         if (Settings::game().mPlayerMovementIgnoresAnimation && mPtr == getPlayer())
             return false;

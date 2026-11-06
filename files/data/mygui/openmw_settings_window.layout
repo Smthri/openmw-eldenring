@@ -230,13 +230,29 @@
                     </Widget>
                 </Widget>
 
-                <Widget type="Widget" skin="MW_Box" position="4 38 352 154" align="Stretch">
-                    <Widget type="ScrollView" skin="MW_ScrollView" position="4 4 344 146" align="Stretch" name="ControlsBox">
+                <Widget type="HBox" position="4 38 360 28">
+                    <Property key="Padding" value="0"/>
+                    <Property key="Spacing" value="4"/>
+                    <Widget type="AutoSizedButton" skin="MW_Button" name="AllControlsButton">
+                        <Property key="Caption" value="#{OMWEngine:AllControls}"/>
+                    </Widget>
+                    <Widget type="AutoSizedButton" skin="MW_Button" name="EldenControlsButton">
+                        <Property key="Caption" value="#{OMWEngine:EldenControls}"/>
+                    </Widget>
+                </Widget>
+                <Widget type="TextBox" skin="SandText" position="4 70 352 42" align="HStretch Top" name="EldenControlsHelp">
+                    <Property key="Caption" value="#{OMWEngine:EldenControlsHelp}"/>
+                    <Property key="WordWrap" value="true"/>
+                    <UserString key="ToolTipType" value="Text"/>
+                    <UserString key="ToolTipText" value="#{OMWEngine:EldenControlsTooltip}"/>
+                </Widget>
+                <Widget type="Widget" skin="MW_Box" position="4 116 352 76" align="Stretch">
+                    <Widget type="ScrollView" skin="MW_ScrollView" position="4 4 344 68" align="Stretch" name="ControlsBox">
                         <Property key="CanvasAlign" value="Left Top"/>
                     </Widget>
                 </Widget>
                 <Widget type="AutoSizedButton" skin="MW_Button" position="4 198 137 24" align="Left Bottom" name="ResetControlsButton">
-                    <Property key="Caption" value="#{OMWEngine:ResetControls}"/>
+                    <Property key="Caption" value="#{OMWEngine:ResetAllControls}"/>
                 </Widget>
                 <Widget type="HBox" position="4 228 600 28" align="Left Bottom">
                     <Widget type="AutoSizedButton" skin="MW_Button">
@@ -965,7 +981,7 @@
                         </Widget>
                     </Widget>
 
-                    <Widget name="ScriptBox" type="Widget" align="Stretch" name="ScriptBox">
+                    <Widget name="ScriptBox" type="Widget" align="Stretch">
                         <UserString key="HStretch" value="true"/>
                         <UserString key="VStretch" value="true"/>
 
