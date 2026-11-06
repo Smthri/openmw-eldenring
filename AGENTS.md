@@ -52,11 +52,33 @@ runner: `python3 build-tools-local/run-renderer-validation.py . renderer-check`.
 
 ## Current state
 
+2026-11-06 problems.txt: sheathed idle/walking and death use native Morrowind
+tracks and death timing. The user explicitly keeps imported running/sprinting
+and restored drawn-weapon idle/walking, including equipped melee inventory stances.
+Death remains native, explicitly confirmed in the follow-up.
+Sheathed native poses retain third-person orbit facing without torso/leg twist;
+the common visual yaw leaves native movement and imported posing unchanged.
+Sheathed idle retains the last played imported action heading after rolls and
+backsteps, rather than restoring the old native leg angle.
+Smooth Movement also bounds sheathed visual turning across native/run clip
+changes, using Player Turning Delay; drawn-weapon facing and physics stay unchanged.
+Guard/grip arm overlays and other combat actions remain imported.
+Settings > Controls > Elden Ring exposes combat
+bindings for keyboard/mouse and controllers; action IDs and custom bindings
+are preserved, including deliberately unbound actions on reload. Reset All to
+Defaults resets the selected device's full layout. There is no hidden Right
+Shift alias. Evidence: build-eldencombat/problems-20261106/validation-summary.json.
+Armed-idle follow-up: build-eldencombat/armed-idle-20261106/validation-summary.json.
+Sheathed-facing fix: build-eldencombat/sheathed-facing-20261106/validation-summary.json.
+Action-facing and smooth transitions: build-eldencombat/sheathed-transitions-20261106/validation-summary.json.
+These are source changes; installed packages are unchanged. See the shared
+handoff for validation limits and pending native visual checks.
+
 2026-10-20 problems.txt follow-up: exterior local maps skip point-light buffer
 reads when lighting is excluded; normal and inventory cameras retain lighting.
 Right-hand blades follow authored weapon axes. Imported callbacks preserve the
-native pose across draw/sheath handoffs. Inventory uses a frozen imported ready
-pose and current grip. Grip swaps keep gait/facing; cell transitions preserve
+native pose across draw/sheath handoffs. Grip swaps keep the active gait;
+cell transitions preserve
 the applied grip while clearing pending actions. Staada's health multiplier,
 save-load upgrade and compensating poise adjustment are reverted.
 

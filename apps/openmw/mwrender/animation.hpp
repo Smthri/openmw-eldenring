@@ -243,6 +243,7 @@ namespace MWRender
         float mUpperBodyYawRadians;
         float mLegsYawRadians;
         float mBodyPitchRadians;
+        std::optional<float> mEldenNativeYaw;
 
         osg::ref_ptr<RotateController> addRotateController(std::string_view bone);
 
@@ -512,6 +513,9 @@ namespace MWRender
 
         virtual void setUpperBodyYawRadians(float v) { mUpperBodyYawRadians = v; }
         virtual void setLegsYawRadians(float v) { mLegsYawRadians = v; }
+        // Visual facing for native poses under the Elden camera controls. This
+        // leaves native articulation state and animation displacement intact.
+        virtual void setEldenNativeYaw(std::optional<float> yaw) { mEldenNativeYaw = yaw; }
         virtual float getUpperBodyYawRadians() const { return mUpperBodyYawRadians; }
         virtual float getLegsYawRadians() const { return mLegsYawRadians; }
         virtual void setBodyPitchRadians(float v) { mBodyPitchRadians = v; }

@@ -37,10 +37,17 @@ Imported poses now apply to NPCs and compatible bipedal creatures, including
 skeletons, dremoras and golden saints. Creature support is determined from the
 actual NIF skeleton: the humanoid pelvis, neck, head, both arms and both legs
 must be present and usable. The adapter preserves native meshes, bone lengths
-and equipment attachments. These creatures share the imported locomotion,
-melee, guard, dodge, reaction and death poses, plus supported casting and
+and equipment attachments. These creatures share imported running, sprinting,
+melee, guard, dodge and reaction poses, plus supported casting and
 throwing gestures. Nonhumanoid, incomplete and unsupported skeletons retain
 their native animations; missing clips also fall back to native poses.
+
+Sheathed idle/walking and death retain Morrowind animations for players, NPCs
+and creatures. Native death tracks keep their original speed and corpse timing.
+Drawn weapons use imported ready idle and walking poses, including guard/grip changes;
+running, sprinting, crouching and airborne combat retain their imported poses.
+The inventory preview uses the imported ready stance for equipped melee armaments,
+with native fallback for an empty hand or missing clips, preserving grip visibility.
 
 The native ashslave, ashzombie, ashvampire, dagothr, cr_draugr and draugrlord
 model families also use these existing humanoid clips and weapon timings.
@@ -106,18 +113,34 @@ humanoid skeletons. They are explicitly admitted to the renderer's full-body
 capability check; incomplete rigs still fall back to native animation. This
 does not change their native creature flags or other non-bipedal creatures.
 
-With Turn to movement direction enabled, unlocked third-person walking,
-running and crouching use forward Elden clips facing the smoothed direction
-of travel. Lock-on and the disabled setting retain directional walk/run
+With Turn to movement direction enabled, unlocked third-person running and
+crouching use forward Elden clips facing the smoothed direction
+of travel. Lock-on and the disabled setting retain directional run/crouch
 animations. Sprinting faces travel in either mode. The camera/aim frame stays
 under the existing controls.
 
-An unlocked third-person player keeps the last visible facing direction when
-standing still, including after sideways or backward travel. Rotating the camera
-orbits that idle pose. Resuming movement follows the selected gait and smoothed
-travel direction; attacks, guarding, lock-on and native aiming retain their
-existing facing. Teleports, death, first person and native/scripted poses reset
-the remembered idle heading.
+Sheathed native standing/walking retains the same world-facing memory as imported
+poses for the unlocked third-person player. Camera-only rotation does not turn
+the standing body or trigger native turn-left/right tracks. Native legs, torso
+and head share one visual yaw, while native walk displacement and directional
+gaits retain their original movement frame. Drawing weapons, first person,
+lock-on, scripted poses, disabled combat, missing assets and death release this
+native-only override. Existing imported facing and camera behavior are unchanged.
+When a sheathed imported action finishes, native idle retains the action's last
+world-facing direction. Rolls keep their roll heading; backsteps keep their
+forward-facing heading despite backward travel. Camera orbit can then continue
+from that heading, and resumed walking selects the native gait's facing again.
+Only successfully played action poses supply this heading; missing clips keep
+the native fallback. Drawn-weapon posing and action movement are unchanged.
+With Smooth Movement enabled, sheathed visual facing turns toward movement on
+the shortest world-space arc instead of snapping. Native idle/walk and imported
+run/sprint share this heading across clip changes. Player Turning Delay is the
+maximum half-turn duration (0.333 seconds by default); shorter turns take less
+time. Stopping retains the heading actually displayed, including mid-turn, while
+roll/backstep poses capture their own facing immediately. This only smooths the
+displayed direction: physics velocity, controls and drawn-weapon posing stay
+unchanged. Disabling Smooth Movement restores immediate visual turning.
+Imported walking/running/sprinting follow the selected gait and smoothed travel direction.
 
 Actors with imported Elden locomotion use the same ground speed forwards,
 backwards, sideways and diagonally at the same stick strength. Native strafing and leg-turn penalties
@@ -138,8 +161,8 @@ independently of movement speed and the smoothing preference.
 An established sprint tolerates up to 0.12 seconds of lost ground contact on
 stairs and terrain seams. Releasing sprint, exhaustion, jumps and longer
 falls still stop it. This grace does not grant grounded attacks in the air.
-Idle/walking poses also tolerate 0.12 seconds of lost contact, so uneven terrain
-does not repeatedly switch the displayed body into its falling pose. This is a
+Pose selection also tolerates 0.12 seconds of lost contact, so uneven terrain
+does not repeatedly switch native standing/walking into an imported falling pose. This is a
 visual-only allowance; actual jumps, combat grounding and physics are unchanged.
 
 Knee bend reconstruction starts from the hip axis and retains a continuous
@@ -675,9 +698,9 @@ creature skeletons. Attacks use their imported clip identifiers and source
 frames at the authored class pace, synchronized to hit-stop. Native weapon
 speed no longer accelerates already-fast imported short-blade/dagger movesets;
 missing timing data retains native weapon speed. This applies to either hand
-and both grips. Dodges, reactions, death,
-weapon stances, guard arm layers
-and directional locomotion also use the baked player clips when available.
+and both grips. Dodges, reactions, guard arm layers, running and sprinting
+also use the baked player clips when available. Drawn weapons retain imported
+idle/walking poses; sheathed idle/walking and death use native Morrowind tracks.
 Spells and activated enchanted items use the effect-based gestures described above;
 thrown weapons use the imported dart gesture, and bows use imported draw,
 aim and release phases synchronized to native shooting.
@@ -911,7 +934,7 @@ retain their damage scaling. Holding guard alone remains free and regenerates
 at the reduced rate; native god mode still prevents fatigue loss.
 Spellcasting, swimming, scripted animations and disabled
 player control retain the engine's appropriate existing behavior.
-Levitation keeps the Elden controller and imported poses active: standing/walking,
+Levitation keeps the Elden controller active: native sheathed idle/walking, imported armed idle/walking,
 melee chains, guarding, casting and dart throws continue in flight. Flight uses
 ordinary melee instead of jump attacks that wait for a landing, and stamina can
 recover while hovering. Jumping, rolling, backstepping, sprinting, crouching and
@@ -996,7 +1019,12 @@ It hides with menus/the HUD and when the lock or projected target is invalid.
 
 New profiles default to the supplied recreation's Elden Ring layout. Existing
 custom profiles are preserved; use Reset to Defaults in Controls to apply it.
-Combat actions and the heavy modifier are rebindable:
+Settings > Controls > Elden Ring groups combat actions, their shared controls
+and the heavy modifier for keyboard/mouse and controller rebinding. The heavy
+and grip combinations use the configured action bindings; Left Shift has no
+hidden Right Shift alias. Custom and unassigned bindings survive restart.
+Reset All to Defaults restores all bindings for the selected device, including
+the All controls category. Default bindings are:
 
   WASD / mouse: move / look; Left Alt: hold to walk
   Space: tap/release to roll; no direction gives a backstep; hold to sprint
@@ -1089,10 +1117,10 @@ Left weapons follow the native weapon attach/detach keys, so sheathing hides
 both weapons and drawing restores the off-hand weapon. Inventory refreshes
 cannot show a weapon while sheathed. Shields and torches retain their own
 visibility and optional shield-sheathing behavior.
-The inventory preview freezes the imported ready pose for the selected grip,
-including both off-hand attachment orientation and selected-hand visibility.
-It uses equipped slots even when the world actor has sheathed weapons.
-Missing banks or stance clips retain the native preview.
+The inventory preview uses the imported ready pose and attachment orientation
+for equipped melee armaments, retaining the selected grip's hand visibility.
+It uses equipped slots even when the world actor has sheathed weapons. An empty
+hand, unsupported weapon or missing stance clip retains the native preview.
 
 Extracted hit records retain the source hand for each contact; paired sequences
 can strike left first or use the same hand twice. Airborne attacks retain all

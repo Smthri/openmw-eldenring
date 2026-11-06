@@ -205,14 +205,14 @@ namespace
 
         EldenInput input;
         input.set(A_HeavyModifier, true, true, Source::Keyboard);
-        input.set(A_HeavyModifier, true, true, Source::AlternateShift);
+        input.set(A_HeavyModifier, true, true, Source::ControllerButton);
         input.set(A_HeavyModifier, false, true, Source::Keyboard);
         input.set(A_Use, true, true, Source::Mouse);
-        check(input.consume(A_HeavyAttack).mPressed, "left Shift release cancelled held right Shift");
-        check(!input.consume(A_Use).mPressed, "held right Shift produced a light attack");
+        check(input.consume(A_HeavyAttack).mPressed, "keyboard modifier release cancelled held controller modifier");
+        check(!input.consume(A_Use).mPressed, "held controller modifier produced a light attack");
         input.clear();
         input.set(A_Use, false, true, Source::Mouse);
-        input.set(A_HeavyModifier, false, true, Source::AlternateShift);
+        input.set(A_HeavyModifier, false, true, Source::ControllerButton);
         check(!input.consume(A_HeavyAttack).mReleased, "cleared physical bindings leaked a charge release");
     }
 

@@ -36,6 +36,7 @@
 #include "../mwbase/soundmanager.hpp"
 #include "../mwbase/windowmanager.hpp"
 #include "../mwbase/world.hpp"
+#include "../mwinput/actions.hpp"
 #include "../mwlua/luamanagerimp.hpp"
 
 #include "confirmationdialog.hpp"
@@ -263,6 +264,7 @@ namespace MWGui
     SettingsWindow::SettingsWindow(Files::ConfigurationManager& cfgMgr)
         : WindowBase("openmw_settings_window.layout")
         , mKeyboardMode(true)
+        , mEldenControls(Settings::game().mEldenRingCombat)
         , mCurrentPage(static_cast<size_t>(-1))
         , mCfgMgr(cfgMgr)
     {
@@ -288,6 +290,9 @@ namespace MWGui
         getWidget(mResetControlsButton, "ResetControlsButton");
         getWidget(mKeyboardSwitch, "KeyboardButton");
         getWidget(mControllerSwitch, "ControllerButton");
+        getWidget(mAllControlsSwitch, "AllControlsButton");
+        getWidget(mEldenControlsSwitch, "EldenControlsButton");
+        getWidget(mEldenControlsHelp, "EldenControlsHelp");
         getWidget(mWaterRefractionButton, "WaterRefractionButton");
         getWidget(mWaterTextureSize, "WaterTextureSize");
         getWidget(mWaterReflectionDetail, "WaterReflectionDetail");
@@ -365,6 +370,10 @@ namespace MWGui
         mKeyboardSwitch->eventMouseButtonClick += MyGUI::newDelegate(this, &SettingsWindow::onKeyboardSwitchClicked);
         mControllerSwitch->eventMouseButtonClick
             += MyGUI::newDelegate(this, &SettingsWindow::onControllerSwitchClicked);
+        mAllControlsSwitch->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onControlsCategoryClicked);
+        mEldenControlsSwitch->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onControlsCategoryClicked);
 
         mPrimaryLanguage->eventComboChangePosition
             += MyGUI::newDelegate(this, &SettingsWindow::onPrimaryLanguageChanged);
@@ -882,6 +891,13 @@ namespace MWGui
         resetScrollbars();
     }
 
+    void SettingsWindow::onControlsCategoryClicked(MyGUI::Widget* sender)
+    {
+        mEldenControls = sender == mEldenControlsSwitch;
+        updateControlsBox();
+        resetScrollbars();
+    }
+
     void SettingsWindow::updateControlsBox()
     {
         while (mControlsBox->getChildCount())
@@ -889,8 +905,17 @@ namespace MWGui
 
         MWBase::Environment::get().getWindowManager()->removeStaticMessageBox();
         const auto inputManager = MWBase::Environment::get().getInputManager();
-        const auto& actions
-            = mKeyboardMode ? inputManager->getActionKeySorting() : inputManager->getActionControllerSorting();
+        // Shared actions use the same binding IDs in both views, so changing
+        // attack, interaction or jump here also updates the ordinary controls.
+        using namespace MWInput;
+        static const std::initializer_list<int> eldenActions{ A_Use, A_HeavyAttack, A_HeavyModifier, A_Block,
+            A_Dodge, A_Jump, A_Sneak, A_Run, A_Activate, A_TwoHand, A_TwoHandLeft, A_LockOn,
+            A_CriticalAttack, A_CycleWeaponRight, A_CycleOffhand, A_ToggleWeapon, A_ToggleSpell };
+        const auto& actions = mEldenControls ? eldenActions
+            : (mKeyboardMode ? inputManager->getActionKeySorting() : inputManager->getActionControllerSorting());
+        mAllControlsSwitch->setStateSelected(!mEldenControls);
+        mEldenControlsSwitch->setStateSelected(mEldenControls);
+        mEldenControlsHelp->setVisible(mEldenControls);
 
         for (const int& action : actions)
         {
@@ -1002,6 +1027,13 @@ namespace MWGui
 
     void SettingsWindow::layoutControlsBox()
     {
+        const int helpHeight = mEldenControlsHelp->getTextSize().height + 8;
+        mEldenControlsHelp->setSize(mEldenControlsHelp->getWidth(), helpHeight);
+        auto* box = mControlsBox->getParent();
+        const int bottom = box->getTop() + box->getHeight();
+        const int top = mEldenControlsHelp->getTop() + (mEldenControls ? helpHeight + 4 : 0);
+        box->setCoord(box->getLeft(), top, box->getWidth(), std::max(32, bottom - top));
+
         const int h = Settings::gui().mFontSize + 2;
         const int w = mControlsBox->getWidth() - 28;
         const int noWidgetsInRow = 2;

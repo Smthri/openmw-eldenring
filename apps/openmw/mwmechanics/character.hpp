@@ -204,7 +204,6 @@ namespace MWMechanics
         EldenCombat::LocomotionAnimationState mEldenLocomotion;
         EldenCombat::GroundContactGrace mEldenGroundContact;
         EldenCombat::IdleFacing mEldenIdleFacing;
-        bool mEldenPoseDead{ false };
         std::optional<EldenCombat::SpellAnimation> mEldenSpellAnimation;
         std::optional<ESM::FormId> mEldenCastingItemId;
 
@@ -249,6 +248,7 @@ namespace MWMechanics
         void updateEldenCombat(float duration);
         void updateEldenCombatAnimations();
         void updateEldenPose(float duration, const osg::Vec3f& movement);
+        bool useEldenNativeFacing() const;
         void hitEldenCombat();
         void updateIdleStormState(bool inwater) const;
 

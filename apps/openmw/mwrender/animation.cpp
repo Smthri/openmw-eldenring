@@ -1482,34 +1482,45 @@ namespace MWRender
         updateEffects();
 
         const float epsilon = 0.001f;
+        // A sheathed third-person pose may keep its world heading while the
+        // camera orbits. Rotate its root, torso and head in the same frame,
+        // without changing the native yaw state used by movement/head tracking.
+        // Without a root controller, retain native posing instead of rotating
+        // only the torso and leaving the legs behind.
+        const bool overrideYaw = mEldenNativeYaw.has_value() && mRootController;
+        const float legsYaw = overrideYaw ? *mEldenNativeYaw : mLegsYawRadians;
+        const float upperBodyYaw = overrideYaw ? *mEldenNativeYaw : mUpperBodyYawRadians;
+        const float headYaw = overrideYaw ? *mEldenNativeYaw : mHeadYawRadians;
         float yawOffset = 0;
         if (mRootController)
         {
-            bool enable = std::abs(mLegsYawRadians) > epsilon || std::abs(mBodyPitchRadians) > epsilon;
+            bool enable = std::abs(legsYaw) > epsilon || std::abs(mBodyPitchRadians) > epsilon;
             mRootController->setEnabled(enable);
             if (enable)
             {
-                osg::Quat legYaw = osg::Quat(mLegsYawRadians, osg::Vec3f(0, 0, 1));
+                osg::Quat legYaw = osg::Quat(legsYaw, osg::Vec3f(0, 0, 1));
                 mRootController->setRotate(legYaw * osg::Quat(mBodyPitchRadians, osg::Vec3f(1, 0, 0)));
-                yawOffset = mLegsYawRadians;
-                // When yawing the root, also update the accumulated movement.
-                movement = legYaw * movement;
+                yawOffset = legsYaw;
             }
+            // Orbit compensation is visual only. Keep native root displacement
+            // in the original leg frame, including when the visible yaw is zero.
+            if (std::abs(mLegsYawRadians) > epsilon || std::abs(mBodyPitchRadians) > epsilon)
+                movement = osg::Quat(mLegsYawRadians, osg::Vec3f(0, 0, 1)) * movement;
         }
         if (mSpineController)
         {
-            float yaw = mUpperBodyYawRadians - yawOffset;
+            float yaw = upperBodyYaw - yawOffset;
             bool enable = std::abs(yaw) > epsilon;
             mSpineController->setEnabled(enable);
             if (enable)
             {
                 mSpineController->setRotate(osg::Quat(yaw, osg::Vec3f(0, 0, 1)));
-                yawOffset = mUpperBodyYawRadians;
+                yawOffset = upperBodyYaw;
             }
         }
         if (mHeadController)
         {
-            float yaw = mHeadYawRadians - yawOffset;
+            float yaw = headYaw - yawOffset;
             bool enable = (std::abs(mHeadPitchRadians) > epsilon || std::abs(yaw) > epsilon);
             mHeadController->setEnabled(enable);
             if (enable)

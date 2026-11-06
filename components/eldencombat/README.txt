@@ -29,6 +29,23 @@ one-/two-handed stance categories. animations.cpp reads the local ERAN bank
 from the recreation's tools/bake_anims.py, validates its layout and samples
 the original 30-fps model-space joint positions and oriented joint axes.
 The engine shares this immutable bank and retargets poses onto actor skeletons.
+The engine adapter retains native Morrowind sheathed idle/walking and death
+tracks, including native death timing. Drawn-weapon idle/walking, running, sprinting
+and combat actions use imported poses, including guard/grip layers.
+Equipped melee armaments use imported ready stances in the
+inventory preview, with native fallback. The bank need not be regenerated.
+Sheathed native idle/walking uses the same IdleFacing world heading as imported
+poses for the unlocked third-person player. The renderer applies a common visual
+yaw to the native body without changing its root-motion frame or stored head/leg
+yaw. Native camera-driven turn clips are suppressed; imported poses are unchanged.
+Completed sheathed actions transfer their last displayed pose heading to native
+idle. Backstep facing is taken from the pose, not backward root displacement;
+final updates can contain residual displacement even after the action is Idle.
+IdleFacing::updateSmoothed bounds sheathed locomotion turning by pi/turningDelay
+radians per second along the shortest world-space arc. It shares the immediate
+update() state, preserving action handoffs, camera orbit, stops and native/run
+transitions. The adapter uses it only with Smooth Movement enabled for the
+sheathed free-camera player; drawn weapons keep the original update().
 One- and two-handed stance gait clips are baked, including one-handed heavy and
 spear carries. locomotionNeedsCarry() requests an idle arm overlay only when a
 one-handed gait falls back to a different category, preserving authored arm

@@ -72,7 +72,11 @@ namespace MWGui
         MyGUI::Button* mResetControlsButton;
         MyGUI::Button* mKeyboardSwitch;
         MyGUI::Button* mControllerSwitch;
+        MyGUI::Button* mAllControlsSwitch;
+        MyGUI::Button* mEldenControlsSwitch;
+        MyGUI::TextBox* mEldenControlsHelp;
         bool mKeyboardMode; // if true, setting up the keyboard. Otherwise, it's controller
+        bool mEldenControls;
 
         MyGUI::EditBox* mScriptFilter;
         MyGUI::ListBox* mScriptList;
@@ -116,6 +120,7 @@ namespace MWGui
         void onResetDefaultBindingsAccept();
         void onKeyboardSwitchClicked(MyGUI::Widget* sender);
         void onControllerSwitchClicked(MyGUI::Widget* sender);
+        void onControlsCategoryClicked(MyGUI::Widget* sender);
 
         void onWindowResize(MyGUI::Window* sender);
 

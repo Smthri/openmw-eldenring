@@ -184,6 +184,9 @@ namespace MWInput
         mListener = std::make_unique<BindingsListener>(mInputBinder.get(), this);
         mInputBinder->setDetectingBindingListener(mListener.get());
 
+        for (int i = 0; i < A_Last; ++i)
+            mLoadedControls[i] = mInputBinder->getChannel(i)->getControlsCount() != 0;
+
         loadKeyDefaults();
         loadControllerDefaults();
 
@@ -366,11 +369,7 @@ namespace MWInput
                 control = mInputBinder->getChannel(i)->getAttachedControls().front().control;
             }
 
-            if (!controlExists || force
-                || (mInputBinder->getKeyBinding(control, ICS::Control::INCREASE) == SDL_SCANCODE_UNKNOWN
-                    && mInputBinder->getMouseButtonBinding(control, ICS::Control::INCREASE) == ICS_MAX_DEVICE_BUTTONS
-                    && mInputBinder->getMouseWheelBinding(control, ICS::Control::INCREASE)
-                        == ICS::InputControlSystem::MouseWheelClick::UNASSIGNED))
+            if (force || !mLoadedControls[i])
             {
                 clearAllKeyBindings(mInputBinder.get(), control);
 
@@ -485,11 +484,7 @@ namespace MWInput
                 control = mInputBinder->getChannel(i)->getAttachedControls().front().control;
             }
 
-            if (!controlExists || force
-                || (mInputBinder->getJoystickAxisBinding(control, sFakeDeviceId, ICS::Control::INCREASE)
-                        == ICS::InputControlSystem::UNASSIGNED
-                    && mInputBinder->getJoystickButtonBinding(control, sFakeDeviceId, ICS::Control::INCREASE)
-                        == ICS_MAX_DEVICE_BUTTONS))
+            if (force || !mLoadedControls[i])
             {
                 clearAllControllerBindings(mInputBinder.get(), control);
 
@@ -525,9 +520,9 @@ namespace MWInput
             case A_ToggleHUD:
                 return "#{OMWEngine:ToggleHUD}";
             case A_Use:
-                return "#{sUse}";
+                return Settings::game().mEldenRingCombat ? "#{OMWEngine:EldenAttack}" : "#{sUse}";
             case A_Activate:
-                return Settings::game().mEldenRingCombat ? "Interact / grip modifier" : "#{sActivate}";
+                return Settings::game().mEldenRingCombat ? "#{OMWEngine:EldenInteract}" : "#{sActivate}";
             case A_MoveBackward:
                 return "#{sBack}";
             case A_MoveForward:
@@ -551,7 +546,7 @@ namespace MWInput
             case A_Console:
                 return "#{OMWEngine:ConsoleWindow}";
             case A_Run:
-                return Settings::game().mEldenRingCombat ? "Walk (hold)" : "#{sRun}";
+                return Settings::game().mEldenRingCombat ? "#{OMWEngine:EldenWalk}" : "#{sRun}";
             case A_Sneak:
                 return "#{sCrouch_Sneak}";
             case A_AutoMove:
@@ -597,23 +592,23 @@ namespace MWInput
             case A_TogglePostProcessorHUD:
                 return "#{OMWEngine:TogglePostProcessorHUD}";
             case A_HeavyAttack:
-                return "Heavy attack / guard counter";
+                return "#{OMWEngine:EldenHeavyAttack}";
             case A_Dodge:
-                return "Dodge / hold to sprint";
+                return "#{OMWEngine:EldenDodge}";
             case A_Block:
-                return "Guard / off-hand attack";
+                return "#{OMWEngine:EldenGuard}";
             case A_LockOn:
-                return "Lock on";
+                return "#{OMWEngine:EldenLockOn}";
             case A_CriticalAttack:
-                return "Critical attack";
+                return "#{OMWEngine:EldenCritical}";
             case A_TwoHand:
-                return "Toggle right two-handed grip";
+                return "#{OMWEngine:EldenRightGrip}";
             case A_TwoHandLeft:
-                return "Toggle left two-handed grip";
+                return "#{OMWEngine:EldenLeftGrip}";
             case A_HeavyModifier:
-                return "Heavy attack modifier (hold with attack)";
+                return "#{OMWEngine:EldenHeavyModifier}";
             case A_CycleOffhand:
-                return "Cycle off-hand armament";
+                return "#{OMWEngine:EldenCycleOffhand}";
             default:
                 return {}; // not configurable
         }
@@ -695,7 +690,7 @@ namespace MWInput
             A_QuickKeysMenu, A_QuickKey1, A_QuickKey2, A_QuickKey3, A_QuickKey4, A_QuickKey5, A_QuickKey6, A_QuickKey7,
             A_QuickKey8, A_QuickKey9, A_QuickKey10, A_CycleSpellLeft, A_CycleSpellRight, A_CycleWeaponLeft,
             A_CycleWeaponRight, A_HeavyAttack, A_Dodge, A_Block, A_LockOn, A_CriticalAttack, A_TwoHand,
-            A_CycleOffhand, A_TwoHandLeft };
+            A_CycleOffhand, A_HeavyModifier, A_TwoHandLeft };
 
         return actions;
     }
@@ -794,11 +789,8 @@ namespace MWInput
             for (int action = 0; action < A_Last; ++action)
             {
                 const SDL_Scancode key = getKeyBinding(action);
-                const bool rightShift = action == A_HeavyModifier && key == SDL_SCANCODE_LSHIFT
-                    && arg.keysym.scancode == SDL_SCANCODE_RSHIFT;
-                if (key == arg.keysym.scancode || rightShift)
-                    captureEldenAction(action, true,
-                        rightShift ? EldenInput::Source::AlternateShift : EldenInput::Source::Keyboard);
+                if (key == arg.keysym.scancode)
+                    captureEldenAction(action, true, EldenInput::Source::Keyboard);
             }
         mInputBinder->keyPressed(arg);
     }
@@ -809,11 +801,8 @@ namespace MWInput
             for (int action = 0; action < A_Last; ++action)
             {
                 const SDL_Scancode key = getKeyBinding(action);
-                const bool rightShift = action == A_HeavyModifier && key == SDL_SCANCODE_LSHIFT
-                    && arg.keysym.scancode == SDL_SCANCODE_RSHIFT;
-                if (key == arg.keysym.scancode || rightShift)
-                    captureEldenAction(action, false,
-                        rightShift ? EldenInput::Source::AlternateShift : EldenInput::Source::Keyboard);
+                if (key == arg.keysym.scancode)
+                    captureEldenAction(action, false, EldenInput::Source::Keyboard);
             }
         mInputBinder->keyReleased(arg);
     }
